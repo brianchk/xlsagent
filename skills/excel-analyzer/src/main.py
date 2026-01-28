@@ -63,6 +63,7 @@ def analyze_workbook(file_path: Path) -> WorkbookAnalysis:
         file_path=file_path,
         file_name=file_path.name,
         file_size=file_path.stat().st_size,
+        is_macro_enabled=file_path.suffix.lower() == '.xlsm',
     )
 
     # Load workbook for most extractors
@@ -155,14 +156,14 @@ def generate_reports(analysis: WorkbookAnalysis, output_dir: Path) -> None:
 
     # HTML Report
     print("  Building HTML report...", flush=True)
-    html_builder = HTMLReportBuilder(analysis)
-    html_path = html_builder.build(output_dir)
+    html_builder = HTMLReportBuilder(analysis, output_dir)
+    html_path = html_builder.build()
     print(f"    Created: {html_path}", flush=True)
 
     # Markdown Reports
     print("  Building Markdown reports...", flush=True)
-    md_builder = MarkdownReportBuilder(analysis)
-    md_builder.build(output_dir)
+    md_builder = MarkdownReportBuilder(analysis, output_dir)
+    md_builder.build()
     print(f"    Created: {output_dir}/README.md", flush=True)
 
 
