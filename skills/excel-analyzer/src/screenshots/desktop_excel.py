@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import platform
 import subprocess
 import time
@@ -14,6 +13,14 @@ from ..models import ScreenshotInfo, SheetInfo, SheetVisibility
 
 class DesktopExcelScreenshotter:
     """Captures screenshots of Excel sheets via desktop Excel application."""
+
+    # Window dimensions for screenshots
+    WINDOW_WIDTH = 1920
+    WINDOW_HEIGHT = 1200
+
+    # Zoom levels
+    ZOOM_NORMAL = 100
+    ZOOM_BIRDSEYE = 25
 
     def __init__(self, output_dir: Path):
         """Initialize screenshotter.
@@ -52,19 +59,31 @@ class DesktopExcelScreenshotter:
         try:
             # Use visible=True so we can screenshot
             app = xw.App(visible=True, add_book=False)
+            # Suppress all prompts and alerts
             app.display_alerts = False
             app.screen_updating = True
+            # Disable automatic link updates
+            app.api.AskToUpdateLinks = False
         except Exception as e:
             print(f"  Could not start Excel: {e}", flush=True)
             return []
 
         try:
-            # Open the workbook
+            # Open the workbook read-only, suppressing prompts
             print(f"  Opening workbook: {file_path.name}", flush=True)
-            wb = app.books.open(str(file_path), read_only=True)
+            wb = app.books.open(
+                str(file_path),
+                read_only=True,
+                update_links=False,  # Don't update external links
+                ignore_read_only_recommended=True,  # Skip read-only prompt
+            )
+
+            # Disable macros execution (already suppressed by display_alerts=False)
+            # Set window size
+            self._set_window_size(app)
 
             # Give Excel time to render
-            time.sleep(2)
+            time.sleep(1)
 
             # Capture each visible sheet
             for sheet_info in sheets:
@@ -72,9 +91,8 @@ class DesktopExcelScreenshotter:
                     print(f"  Skipping hidden sheet: {sheet_info.name}", flush=True)
                     continue
 
-                screenshot_info = self._capture_sheet(wb, sheet_info)
-                if screenshot_info:
-                    screenshots.append(screenshot_info)
+                sheet_screenshots = self._capture_sheet(wb, sheet_info)
+                screenshots.extend(sheet_screenshots)
 
             # Close workbook without saving
             wb.close()
@@ -90,8 +108,32 @@ class DesktopExcelScreenshotter:
 
         return screenshots
 
-    def _capture_sheet(self, wb, sheet_info: SheetInfo) -> ScreenshotInfo | None:
-        """Capture a screenshot of a single sheet."""
+    def _set_window_size(self, app) -> None:
+        """Set Excel window to standard size for consistent screenshots."""
+        try:
+            if self.system == "Darwin":
+                # macOS: Use AppleScript to resize window
+                script = f'''
+                tell application "Microsoft Excel"
+                    activate
+                    set bounds of window 1 to {{0, 0, {self.WINDOW_WIDTH}, {self.WINDOW_HEIGHT}}}
+                end tell
+                '''
+                subprocess.run(
+                    ["osascript", "-e", script],
+                    capture_output=True,
+                    timeout=5
+                )
+            elif self.system == "Windows":
+                # Windows: Use xlwings API
+                app.api.ActiveWindow.Width = self.WINDOW_WIDTH
+                app.api.ActiveWindow.Height = self.WINDOW_HEIGHT
+        except Exception as e:
+            print(f"  Could not set window size: {e}", flush=True)
+
+    def _capture_sheet(self, wb, sheet_info: SheetInfo) -> list[ScreenshotInfo]:
+        """Capture screenshots of a single sheet (normal + bird's eye view)."""
+        screenshots = []
         try:
             print(f"  Capturing: {sheet_info.name}", flush=True)
 
@@ -103,33 +145,74 @@ class DesktopExcelScreenshotter:
             sheet.range("A1").select()
 
             # Give time for rendering
-            time.sleep(0.5)
+            time.sleep(0.3)
 
-            # Take screenshot
-            screenshot_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}.png"
+            # Screenshot 1: Normal view (100% zoom)
+            self._set_zoom(sheet, self.ZOOM_NORMAL)
+            time.sleep(0.2)
 
-            if self.system == "Darwin":
-                success = self._screenshot_macos(screenshot_path)
-            elif self.system == "Windows":
-                success = self._screenshot_windows(screenshot_path)
-            else:
-                print(f"  Unsupported platform: {self.system}", flush=True)
-                return None
-
-            if success and screenshot_path.exists():
-                return ScreenshotInfo(
+            normal_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_100.png"
+            if self._take_screenshot(normal_path):
+                screenshots.append(ScreenshotInfo(
                     sheet=sheet_info.name,
-                    path=screenshot_path,
+                    path=normal_path,
                     captured_at=datetime.now().isoformat(),
-                )
+                ))
+
+            # Screenshot 2: Bird's eye view (25% zoom)
+            self._set_zoom(sheet, self.ZOOM_BIRDSEYE)
+            time.sleep(0.3)
+
+            birdseye_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_25.png"
+            if self._take_screenshot(birdseye_path):
+                screenshots.append(ScreenshotInfo(
+                    sheet=sheet_info.name,
+                    path=birdseye_path,
+                    captured_at=datetime.now().isoformat(),
+                ))
+
+            # Reset zoom to normal
+            self._set_zoom(sheet, self.ZOOM_NORMAL)
 
         except Exception as e:
             print(f"  Error capturing sheet '{sheet_info.name}': {e}", flush=True)
 
-        return None
+        return screenshots
+
+    def _set_zoom(self, sheet, zoom_level: int) -> None:
+        """Set the zoom level for the active sheet."""
+        try:
+            if self.system == "Darwin":
+                # macOS: Use AppleScript to set zoom
+                script = f'''
+                tell application "Microsoft Excel"
+                    set view of active window to normal view
+                    set zoom of active window to {zoom_level}
+                end tell
+                '''
+                subprocess.run(
+                    ["osascript", "-e", script],
+                    capture_output=True,
+                    timeout=5
+                )
+            else:
+                # Windows: Use xlwings API
+                sheet.book.app.api.ActiveWindow.Zoom = zoom_level
+        except Exception as e:
+            print(f"  Could not set zoom to {zoom_level}%: {e}", flush=True)
+
+    def _take_screenshot(self, output_path: Path) -> bool:
+        """Take a screenshot of the Excel window only."""
+        if self.system == "Darwin":
+            return self._screenshot_macos(output_path)
+        elif self.system == "Windows":
+            return self._screenshot_windows(output_path)
+        else:
+            print(f"  Unsupported platform: {self.system}", flush=True)
+            return False
 
     def _screenshot_macos(self, output_path: Path) -> bool:
-        """Take screenshot on macOS using screencapture."""
+        """Take screenshot of Excel window on macOS using screencapture."""
         try:
             # Bring Excel to front
             subprocess.run(
@@ -137,14 +220,16 @@ class DesktopExcelScreenshotter:
                 capture_output=True,
                 timeout=5
             )
-            time.sleep(0.3)
+            time.sleep(0.2)
 
-            # Get the CGWindowID for the frontmost Excel window
+            # Get the window position and size via System Events
             script = '''
             tell application "System Events"
                 set excelProcess to first application process whose name is "Microsoft Excel"
-                set frontWindow to first window of excelProcess
-                return id of frontWindow
+                set frontWindow to window 1 of excelProcess
+                set winPos to position of frontWindow
+                set winSize to size of frontWindow
+                return {item 1 of winPos, item 2 of winPos, item 1 of winSize, item 2 of winSize}
             end tell
             '''
             result = subprocess.run(
@@ -154,31 +239,38 @@ class DesktopExcelScreenshotter:
                 timeout=10
             )
 
-            if result.returncode == 0 and result.stdout.strip():
-                window_id = result.stdout.strip()
-                # Capture specific window by CGWindowID
-                capture_result = subprocess.run(
-                    ["screencapture", "-l", window_id, "-x", "-o", str(output_path)],
-                    capture_output=True,
-                    timeout=10
-                )
-                if output_path.exists():
-                    return True
+            if result.returncode != 0 or not result.stdout.strip():
+                print(f"  Could not get Excel window bounds: {result.stderr}", flush=True)
+                return False
 
-            # Fallback: capture the main screen (Excel should be frontmost)
-            subprocess.run(
-                ["screencapture", "-x", "-o", str(output_path)],
+            # Parse the bounds: x, y, width, height
+            bounds = result.stdout.strip().split(", ")
+            if len(bounds) != 4:
+                print(f"  Invalid window bounds: {result.stdout}", flush=True)
+                return False
+
+            x, y, w, h = [int(b) for b in bounds]
+
+            # Capture the window region
+            region = f"{x},{y},{w},{h}"
+            capture_result = subprocess.run(
+                ["screencapture", f"-R{region}", "-x", "-o", str(output_path)],
                 capture_output=True,
                 timeout=10
             )
-            return output_path.exists()
+
+            if not output_path.exists():
+                print(f"  Screenshot failed: {capture_result.stderr.decode() if capture_result.stderr else 'unknown error'}", flush=True)
+                return False
+
+            return True
 
         except Exception as e:
             print(f"  macOS screenshot failed: {e}", flush=True)
             return False
 
     def _screenshot_windows(self, output_path: Path) -> bool:
-        """Take screenshot on Windows using win32gui + PIL."""
+        """Take screenshot of Excel window on Windows using win32gui + PIL."""
         try:
             import win32gui
             import win32ui
