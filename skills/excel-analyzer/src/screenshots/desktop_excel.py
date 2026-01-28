@@ -131,12 +131,21 @@ class DesktopExcelScreenshotter:
     def _screenshot_macos(self, output_path: Path) -> bool:
         """Take screenshot on macOS using screencapture."""
         try:
-            # Get Excel window ID using AppleScript
+            # Bring Excel to front
+            subprocess.run(
+                ["osascript", "-e", 'tell application "Microsoft Excel" to activate'],
+                capture_output=True,
+                timeout=5
+            )
+            time.sleep(0.3)
+
+            # Get the CGWindowID for the frontmost Excel window
             script = '''
-            tell application "Microsoft Excel"
-                set windowId to id of window 1
+            tell application "System Events"
+                set excelProcess to first application process whose name is "Microsoft Excel"
+                set frontWindow to first window of excelProcess
+                return id of frontWindow
             end tell
-            return windowId
             '''
             result = subprocess.run(
                 ["osascript", "-e", script],
@@ -145,28 +154,24 @@ class DesktopExcelScreenshotter:
                 timeout=10
             )
 
-            if result.returncode == 0:
+            if result.returncode == 0 and result.stdout.strip():
                 window_id = result.stdout.strip()
-                # Capture specific window
-                subprocess.run(
-                    ["screencapture", "-l", window_id, "-o", str(output_path)],
+                # Capture specific window by CGWindowID
+                capture_result = subprocess.run(
+                    ["screencapture", "-l", window_id, "-x", "-o", str(output_path)],
+                    capture_output=True,
                     timeout=10
                 )
-                return output_path.exists()
-            else:
-                # Fallback: capture frontmost window
-                # First bring Excel to front
-                subprocess.run(
-                    ["osascript", "-e", 'tell application "Microsoft Excel" to activate'],
-                    timeout=5
-                )
-                time.sleep(0.3)
-                # Capture the frontmost window
-                subprocess.run(
-                    ["screencapture", "-w", "-o", str(output_path)],
-                    timeout=10
-                )
-                return output_path.exists()
+                if output_path.exists():
+                    return True
+
+            # Fallback: capture the main screen (Excel should be frontmost)
+            subprocess.run(
+                ["screencapture", "-x", "-o", str(output_path)],
+                capture_output=True,
+                timeout=10
+            )
+            return output_path.exists()
 
         except Exception as e:
             print(f"  macOS screenshot failed: {e}", flush=True)
