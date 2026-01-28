@@ -80,16 +80,34 @@ class DesktopExcelScreenshotter:
         try:
             # Open the workbook read-only, suppressing prompts
             print(f"  Opening workbook: {file_path.name}", flush=True)
-            wb = app.books.open(
-                str(file_path),
-                read_only=True,
-                update_links=False,  # Don't update external links
-                ignore_read_only_recommended=True,  # Skip read-only prompt
-            )
 
-            # Dismiss any macro security dialog that appears (macOS)
             if self.system == "Darwin":
+                # On macOS, use AppleScript to open read-only more reliably
+                open_script = f'''
+                tell application "Microsoft Excel"
+                    open "{file_path}" with read only
+                end tell
+                '''
+                subprocess.run(
+                    ["osascript", "-e", open_script],
+                    capture_output=True,
+                    timeout=30
+                )
+                time.sleep(2)  # Wait for file to open
+                wb = app.books.active
+                # Dismiss macro dialog
                 self._dismiss_macro_dialog()
+                # Hide other apps to avoid overlap in screenshots
+                self._hide_other_apps()
+            else:
+                # Windows path
+                wb = app.books.open(
+                    str(file_path),
+                    read_only=True,
+                    update_links=False,
+                    ignore_read_only_recommended=True,
+                )
+
             # Set window size
             self._set_window_size(app)
 
@@ -120,39 +138,77 @@ class DesktopExcelScreenshotter:
         return screenshots
 
     def _dismiss_macro_dialog(self) -> None:
-        """Dismiss the macro security dialog on macOS by clicking 'Disable Macros'."""
+        """Dismiss the macro security dialog on macOS."""
         try:
-            # Wait a moment for the dialog to appear
-            time.sleep(0.5)
-            # Use System Events to click the "Disable Macros" button if present
+            # Wait for dialog to appear
+            time.sleep(1)
+
+            # Try multiple approaches to dismiss the macro dialog
             script = '''
             tell application "System Events"
                 tell process "Microsoft Excel"
                     set frontmost to true
-                    -- Look for the macro security dialog
-                    if exists (sheet 1 of window 1) then
-                        -- Try to click "Disable Macros" button
+                    delay 0.3
+
+                    -- Try clicking various button names (different Excel versions use different names)
+                    set buttonNames to {"Disable Macros", "Disable Content", "Don't Enable", "Cancel"}
+
+                    repeat with btnName in buttonNames
                         try
-                            click button "Disable Macros" of sheet 1 of window 1
-                            return "dismissed"
+                            -- Check in sheets (modal dialogs)
+                            if exists sheet 1 of window 1 then
+                                if exists button btnName of sheet 1 of window 1 then
+                                    click button btnName of sheet 1 of window 1
+                                    return "dismissed: " & btnName
+                                end if
+                            end if
                         end try
-                        -- Or try "Disable Content" (different Excel versions)
                         try
-                            click button "Disable Content" of sheet 1 of window 1
-                            return "dismissed"
+                            -- Check in the window directly
+                            if exists button btnName of window 1 then
+                                click button btnName of window 1
+                                return "dismissed: " & btnName
+                            end if
                         end try
-                    end if
+                    end repeat
+
+                    -- Fallback: press Escape key to dismiss any dialog
+                    try
+                        key code 53 -- Escape key
+                        return "escaped"
+                    end try
                 end tell
             end tell
-            return "no dialog"
+            return "no dialog found"
+            '''
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.stdout.strip():
+                print(f"    Macro dialog: {result.stdout.strip()}", flush=True)
+        except Exception as e:
+            print(f"    Could not dismiss macro dialog: {e}", flush=True)
+
+    def _hide_other_apps(self) -> None:
+        """Hide all applications except Excel to avoid window overlap in screenshots."""
+        try:
+            script = '''
+            tell application "System Events"
+                set visible of every process whose name is not "Microsoft Excel" and visible is true to false
+            end tell
+            tell application "Microsoft Excel" to activate
             '''
             subprocess.run(
                 ["osascript", "-e", script],
                 capture_output=True,
                 timeout=5
             )
+            time.sleep(0.3)
         except Exception:
-            pass  # Dialog may not have appeared
+            pass
 
     def _set_window_size(self, app) -> None:
         """Set Excel window to standard size for consistent screenshots."""
@@ -249,7 +305,9 @@ class DesktopExcelScreenshotter:
 
     def _take_screenshot(self, output_path: Path) -> bool:
         """Take a screenshot of the Excel window only."""
+        # Ensure Excel is frontmost and other apps are hidden
         if self.system == "Darwin":
+            self._hide_other_apps()
             return self._screenshot_macos(output_path)
         elif self.system == "Windows":
             return self._screenshot_windows(output_path)
