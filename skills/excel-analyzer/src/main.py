@@ -285,7 +285,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 return 1
 
             sharepoint_url = input_path
-            print(f"Downloading from SharePoint...")
+            print(f"Downloading from SharePoint...", flush=True)
             file_path = await download_file(input_path, session_store)
             temp_dir = file_path.parent
         else:
