@@ -138,12 +138,6 @@ class SharePointDownloader:
             # Wait for Excel Online to fully initialize
             await asyncio.sleep(5)
 
-            # Debug: print current URL and save screenshot
-            print(f"Current URL: {page.url}", flush=True)
-            debug_screenshot = output_path.parent / "debug_page.png"
-            await page.screenshot(path=str(debug_screenshot))
-            print(f"Debug screenshot saved: {debug_screenshot}", flush=True)
-
             # Try to click download button
             downloaded = await self._try_download_button(page, output_path)
 
