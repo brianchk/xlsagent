@@ -20,7 +20,7 @@ class DesktopExcelScreenshotter:
 
     # Zoom levels
     ZOOM_NORMAL = 100
-    ZOOM_BIRDSEYE = 25
+    ZOOM_BIRDSEYE = 65
 
     def __init__(self, output_dir: Path):
         """Initialize screenshotter.
@@ -63,7 +63,16 @@ class DesktopExcelScreenshotter:
             app.display_alerts = False
             app.screen_updating = True
             # Disable automatic link updates
-            app.api.AskToUpdateLinks = False
+            try:
+                app.api.AskToUpdateLinks = False
+            except Exception:
+                pass  # May not be available on macOS
+            # Disable macro security prompts (force disable macros)
+            try:
+                # msoAutomationSecurityForceDisable = 3
+                app.api.AutomationSecurity = 3
+            except Exception:
+                pass  # May not be available on macOS
         except Exception as e:
             print(f"  Could not start Excel: {e}", flush=True)
             return []
@@ -78,7 +87,9 @@ class DesktopExcelScreenshotter:
                 ignore_read_only_recommended=True,  # Skip read-only prompt
             )
 
-            # Disable macros execution (already suppressed by display_alerts=False)
+            # Dismiss any macro security dialog that appears (macOS)
+            if self.system == "Darwin":
+                self._dismiss_macro_dialog()
             # Set window size
             self._set_window_size(app)
 
@@ -107,6 +118,41 @@ class DesktopExcelScreenshotter:
                 pass
 
         return screenshots
+
+    def _dismiss_macro_dialog(self) -> None:
+        """Dismiss the macro security dialog on macOS by clicking 'Disable Macros'."""
+        try:
+            # Wait a moment for the dialog to appear
+            time.sleep(0.5)
+            # Use System Events to click the "Disable Macros" button if present
+            script = '''
+            tell application "System Events"
+                tell process "Microsoft Excel"
+                    set frontmost to true
+                    -- Look for the macro security dialog
+                    if exists (sheet 1 of window 1) then
+                        -- Try to click "Disable Macros" button
+                        try
+                            click button "Disable Macros" of sheet 1 of window 1
+                            return "dismissed"
+                        end try
+                        -- Or try "Disable Content" (different Excel versions)
+                        try
+                            click button "Disable Content" of sheet 1 of window 1
+                            return "dismissed"
+                        end try
+                    end if
+                end tell
+            end tell
+            return "no dialog"
+            '''
+            subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                timeout=5
+            )
+        except Exception:
+            pass  # Dialog may not have appeared
 
     def _set_window_size(self, app) -> None:
         """Set Excel window to standard size for consistent screenshots."""
@@ -151,7 +197,7 @@ class DesktopExcelScreenshotter:
             self._set_zoom(sheet, self.ZOOM_NORMAL)
             time.sleep(0.2)
 
-            normal_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_100.png"
+            normal_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_{self.ZOOM_NORMAL}.png"
             if self._take_screenshot(normal_path):
                 screenshots.append(ScreenshotInfo(
                     sheet=sheet_info.name,
@@ -163,7 +209,7 @@ class DesktopExcelScreenshotter:
             self._set_zoom(sheet, self.ZOOM_BIRDSEYE)
             time.sleep(0.3)
 
-            birdseye_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_25.png"
+            birdseye_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_{self.ZOOM_BIRDSEYE}.png"
             if self._take_screenshot(birdseye_path):
                 screenshots.append(ScreenshotInfo(
                     sheet=sheet_info.name,
