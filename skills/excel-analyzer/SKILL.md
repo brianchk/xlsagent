@@ -1,22 +1,26 @@
 # Excel Workbook Analyzer
 
-Comprehensively analyze Excel workbooks from SharePoint URLs, producing rich HTML reports for human review and agent-optimized markdown files for AI consumption.
+Comprehensively analyze local Excel workbooks, producing rich HTML reports for human review and agent-optimized markdown files for AI consumption.
 
 ## Usage
 
 ```
-/analyze-excel <sharepoint-url>
+/analyze-excel /path/to/workbook.xlsx
 ```
 
-Or with a local file:
+With custom output directory:
 ```
-/analyze-excel /path/to/workbook.xlsx
+/analyze-excel /path/to/workbook.xlsx -o ./my-output
+```
+
+Skip screenshots:
+```
+/analyze-excel /path/to/workbook.xlsx --no-screenshots
 ```
 
 ## What It Does
 
-1. **Downloads** the Excel file from SharePoint (handles M365 SSO authentication)
-2. **Extracts** comprehensive metadata and content:
+1. **Extracts** comprehensive metadata and content:
    - All sheets (visible, hidden, very hidden)
    - Formulas with classification (dynamic array, LAMBDA, lookup, etc.)
    - Named ranges and LAMBDA function definitions
@@ -34,8 +38,8 @@ Or with a local file:
    - Protection settings
    - Print settings
    - Error cells (#REF!, #NAME?, etc.)
-3. **Captures screenshots** of each sheet via Excel Online
-4. **Generates** a comprehensive HTML report and agent-optimized markdown files
+2. **Captures screenshots** of each sheet via Desktop Excel (xlwings)
+3. **Generates** a comprehensive HTML report and agent-optimized markdown files
 
 ## Output
 
@@ -55,24 +59,25 @@ Creates an output directory with:
 ## Requirements
 
 - Python 3.11+
-- uv package manager
-- Playwright browsers installed
+- Microsoft Excel installed (for screenshots)
+- macOS: Grant Terminal automation access to Excel (System Settings > Privacy & Security > Automation)
+- Windows: pywin32 package (installed automatically)
 
 ## First Run
 
 The skill will automatically set up its virtual environment and install dependencies on first run.
 
-For SharePoint URLs, you'll be prompted to authenticate via browser on first use. Sessions are cached for subsequent runs.
-
 ## Limitations
 
-- **DAX/Power Pivot**: Can detect presence but cannot fully extract DAX formulas (proprietary format). Screenshots of Data Model view are captured when possible.
-- **Very Hidden Sheets**: Documented but cannot be unhidden via Excel Online (requires VBA).
+- **DAX/Power Pivot**: Can detect presence but cannot fully extract DAX formulas (proprietary format).
+- **Very Hidden Sheets**: Documented but screenshots not available (requires VBA to unhide).
 - **ActiveX Controls**: Limited extraction due to complex OLE embedding.
+- **Screenshots**: Require Desktop Excel to be installed and automation permissions granted.
 
 ## Examples
 
 ```
-/analyze-excel https://company.sharepoint.com/:x:/r/sites/Finance/Reports.xlsx
 /analyze-excel ~/Downloads/quarterly-report.xlsx
+/analyze-excel /Users/brian/Documents/budget.xlsm -o ./budget-analysis
+/analyze-excel ./data.xlsx --no-screenshots
 ```
