@@ -1,0 +1,50 @@
+[project]
+name = "excel-analyzer"
+version = "1.0.0"
+description = "Comprehensive Excel workbook analyzer for Claude Code"
+requires-python = ">=3.11"
+
+dependencies = [
+    "openpyxl>=3.1.0",        # Excel parsing
+    "oletools>=0.60",          # VBA extraction
+    "playwright>=1.40.0",      # Browser automation
+    "jinja2>=3.1.0",           # HTML templating
+    "pygments>=2.17.0",        # Syntax highlighting
+    "httpx>=0.26.0",           # HTTP client
+    "pydantic>=2.5.0",         # Data models
+    "lxml>=5.0.0",             # XML parsing
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[project.scripts]
+analyze-excel = "src.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
