@@ -62,17 +62,14 @@ class DesktopExcelScreenshotter:
             # Suppress all prompts and alerts
             app.display_alerts = False
             app.screen_updating = True
-            # Disable automatic link updates
-            try:
-                app.api.AskToUpdateLinks = False
-            except Exception:
-                pass  # May not be available on macOS
-            # Disable macro security prompts (force disable macros)
-            try:
-                # msoAutomationSecurityForceDisable = 3
-                app.api.AutomationSecurity = 3
-            except Exception:
-                pass  # May not be available on macOS
+
+            if self.system == "Windows":
+                # Windows-specific settings
+                try:
+                    app.api.AskToUpdateLinks = False
+                    app.api.AutomationSecurity = 3  # msoAutomationSecurityForceDisable
+                except Exception:
+                    pass
         except Exception as e:
             print(f"  Could not start Excel: {e}", flush=True)
             return []
@@ -82,25 +79,10 @@ class DesktopExcelScreenshotter:
             print(f"  Opening workbook: {file_path.name}", flush=True)
 
             if self.system == "Darwin":
-                # On macOS, use AppleScript to open read-only more reliably
-                open_script = f'''
-                tell application "Microsoft Excel"
-                    open "{file_path}" with read only
-                end tell
-                '''
-                subprocess.run(
-                    ["osascript", "-e", open_script],
-                    capture_output=True,
-                    timeout=30
-                )
-                time.sleep(2)  # Wait for file to open
-                wb = app.books.active
-                # Dismiss macro dialog
-                self._dismiss_macro_dialog()
-                # Hide other apps to avoid overlap in screenshots
-                self._hide_other_apps()
+                # On macOS, use AppleScript with all suppression options
+                wb = self._open_workbook_macos(app, file_path)
             else:
-                # Windows path
+                # Windows: use xlwings with suppression options
                 wb = app.books.open(
                     str(file_path),
                     read_only=True,
@@ -108,16 +90,19 @@ class DesktopExcelScreenshotter:
                     ignore_read_only_recommended=True,
                 )
 
+            if wb is None:
+                print("  Failed to open workbook", flush=True)
+                return []
+
             # Set window size
             self._set_window_size(app)
 
             # Give Excel time to render
-            time.sleep(1)
+            time.sleep(0.5)
 
             # Capture each visible sheet
             for sheet_info in sheets:
                 if sheet_info.visibility != SheetVisibility.VISIBLE:
-                    print(f"  Skipping hidden sheet: {sheet_info.name}", flush=True)
                     continue
 
                 sheet_screenshots = self._capture_sheet(wb, sheet_info)
@@ -137,88 +122,92 @@ class DesktopExcelScreenshotter:
 
         return screenshots
 
-    def _dismiss_macro_dialog(self) -> None:
-        """Dismiss the macro security dialog on macOS."""
-        try:
-            # Wait for dialog to appear
-            time.sleep(1)
+    def _open_workbook_macos(self, app, file_path: Path):
+        """Open workbook on macOS with all dialogs suppressed."""
+        # Use xlwings to open, then dismiss dialogs via AppleScript
+        # The update_links=False should suppress the external links dialog
+        wb = app.books.open(
+            str(file_path),
+            read_only=True,
+            update_links=False,
+            ignore_read_only_recommended=True,
+        )
 
-            # Try multiple approaches to dismiss the macro dialog
+        # Wait for file to open and dialogs to appear
+        time.sleep(1)
+
+        # Dismiss any dialogs that appeared (macros, security, etc.)
+        self._dismiss_all_dialogs_macos()
+
+        return wb
+
+    def _dismiss_all_dialogs_macos(self) -> None:
+        """Dismiss all Excel dialogs and security warnings on macOS."""
+        # Try multiple times as dialogs may appear sequentially
+        for _ in range(3):
             script = '''
             tell application "System Events"
                 tell process "Microsoft Excel"
                     set frontmost to true
-                    delay 0.3
 
-                    -- Try clicking various button names (different Excel versions use different names)
-                    set buttonNames to {"Disable Macros", "Disable Content", "Don't Enable", "Cancel"}
-
-                    repeat with btnName in buttonNames
-                        try
-                            -- Check in sheets (modal dialogs)
-                            if exists sheet 1 of window 1 then
-                                if exists button btnName of sheet 1 of window 1 then
-                                    click button btnName of sheet 1 of window 1
-                                    return "dismissed: " & btnName
-                                end if
-                            end if
-                        end try
-                        try
-                            -- Check in the window directly
-                            if exists button btnName of window 1 then
-                                click button btnName of window 1
-                                return "dismissed: " & btnName
-                            end if
-                        end try
-                    end repeat
-
-                    -- Fallback: press Escape key to dismiss any dialog
+                    -- Dismiss modal dialogs (sheets)
                     try
-                        key code 53 -- Escape key
-                        return "escaped"
+                        if exists sheet 1 of window 1 then
+                            -- Try common button names
+                            repeat with btnName in {"Disable Macros", "Don't Update", "No", "Cancel", "Don't Enable", "Disable Content", "OK"}
+                                try
+                                    if exists button btnName of sheet 1 of window 1 then
+                                        click button btnName of sheet 1 of window 1
+                                        delay 0.3
+                                        exit repeat
+                                    end if
+                                end try
+                            end repeat
+                        end if
+                    end try
+
+                    -- Dismiss security warning banner (the yellow bar)
+                    -- Look for the close button (X) on the message bar
+                    try
+                        set allGroups to every group of window 1
+                        repeat with g in allGroups
+                            try
+                                -- Look for buttons that might close the security bar
+                                set allButtons to every button of g
+                                repeat with b in allButtons
+                                    set btnDesc to description of b
+                                    if btnDesc contains "close" or btnDesc contains "dismiss" then
+                                        click b
+                                        delay 0.2
+                                    end if
+                                end repeat
+                            end try
+                        end repeat
+                    end try
+
+                    -- Press Escape as fallback for any remaining dialogs
+                    try
+                        key code 53
                     end try
                 end tell
             end tell
-            return "no dialog found"
-            '''
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if result.stdout.strip():
-                print(f"    Macro dialog: {result.stdout.strip()}", flush=True)
-        except Exception as e:
-            print(f"    Could not dismiss macro dialog: {e}", flush=True)
-
-    def _hide_other_apps(self) -> None:
-        """Hide all applications except Excel to avoid window overlap in screenshots."""
-        try:
-            script = '''
-            tell application "System Events"
-                set visible of every process whose name is not "Microsoft Excel" and visible is true to false
-            end tell
-            tell application "Microsoft Excel" to activate
             '''
             subprocess.run(
                 ["osascript", "-e", script],
                 capture_output=True,
-                timeout=5
+                timeout=10
             )
             time.sleep(0.3)
-        except Exception:
-            pass
 
     def _set_window_size(self, app) -> None:
         """Set Excel window to standard size for consistent screenshots."""
         try:
             if self.system == "Darwin":
-                # macOS: Use AppleScript to resize window
+                # macOS: Use AppleScript to resize and position window
                 script = f'''
                 tell application "Microsoft Excel"
                     activate
-                    set bounds of window 1 to {{0, 0, {self.WINDOW_WIDTH}, {self.WINDOW_HEIGHT}}}
+                    set bounds of window 1 to {{0, 25, {self.WINDOW_WIDTH}, {self.WINDOW_HEIGHT}}}
                 end tell
                 '''
                 subprocess.run(
@@ -226,10 +215,16 @@ class DesktopExcelScreenshotter:
                     capture_output=True,
                     timeout=5
                 )
-            elif self.system == "Windows":
+            else:
                 # Windows: Use xlwings API
-                app.api.ActiveWindow.Width = self.WINDOW_WIDTH
-                app.api.ActiveWindow.Height = self.WINDOW_HEIGHT
+                try:
+                    app.api.ActiveWindow.WindowState = -4143  # xlNormal
+                    app.api.ActiveWindow.Top = 0
+                    app.api.ActiveWindow.Left = 0
+                    app.api.ActiveWindow.Width = self.WINDOW_WIDTH
+                    app.api.ActiveWindow.Height = self.WINDOW_HEIGHT
+                except Exception:
+                    pass
         except Exception as e:
             print(f"  Could not set window size: {e}", flush=True)
 
@@ -261,7 +256,7 @@ class DesktopExcelScreenshotter:
                     captured_at=datetime.now().isoformat(),
                 ))
 
-            # Screenshot 2: Bird's eye view (25% zoom)
+            # Screenshot 2: Bird's eye view
             self._set_zoom(sheet, self.ZOOM_BIRDSEYE)
             time.sleep(0.3)
 
@@ -305,9 +300,7 @@ class DesktopExcelScreenshotter:
 
     def _take_screenshot(self, output_path: Path) -> bool:
         """Take a screenshot of the Excel window only."""
-        # Ensure Excel is frontmost and other apps are hidden
         if self.system == "Darwin":
-            self._hide_other_apps()
             return self._screenshot_macos(output_path)
         elif self.system == "Windows":
             return self._screenshot_windows(output_path)
@@ -449,6 +442,7 @@ class DesktopExcelScreenshotter:
             print(f"  win32 modules not available ({e}), trying pyautogui...", flush=True)
             try:
                 import pyautogui
+                # Find Excel window and capture it
                 time.sleep(0.2)
                 screenshot = pyautogui.screenshot()
                 screenshot.save(str(output_path))
