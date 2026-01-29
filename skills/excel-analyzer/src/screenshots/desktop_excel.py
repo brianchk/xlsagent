@@ -227,43 +227,79 @@ class DesktopExcelScreenshotter:
             print(f"  Could not set zoom to {zoom_level}%: {e}", flush=True)
 
     def _take_screenshot(self, output_path: Path, sheet=None) -> bool:
-        """Take a screenshot of the sheet area (not the whole window).
-
-        Uses Excel's CopyPicture to capture just the visible cells.
-        """
+        """Take a screenshot of the Excel window and crop to sheet area."""
         try:
-            from PIL import ImageGrab
-            import pythoncom
-            import win32clipboard
+            import win32gui
+            import win32ui
+            import win32con
+            from PIL import Image
+            import ctypes
 
-            if sheet is None:
-                print("  No sheet provided for screenshot", flush=True)
+            # Find Excel window
+            def find_excel_window(hwnd, windows):
+                if win32gui.IsWindowVisible(hwnd):
+                    title = win32gui.GetWindowText(hwnd)
+                    if "Excel" in title:
+                        windows.append(hwnd)
+                return True
+
+            windows = []
+            win32gui.EnumWindows(find_excel_window, windows)
+
+            if not windows:
+                print("  Could not find Excel window", flush=True)
                 return False
 
-            # Get the visible range in the current window
-            try:
-                excel_window = sheet.book.app.api.ActiveWindow
-                visible_range = excel_window.VisibleRange
+            hwnd = windows[0]
 
-                # Copy the visible range as a picture
-                visible_range.CopyPicture(1, 2)  # xlScreen=1, xlPicture=2 (or xlBitmap=-4147)
-                time.sleep(0.2)
+            # Get window dimensions
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            width = right - left
+            height = bottom - top
 
-                # Grab from clipboard
-                img = ImageGrab.grabclipboard()
-                if img:
-                    img.save(str(output_path), "PNG")
-                    return output_path.exists()
-                else:
-                    print("  Could not grab image from clipboard", flush=True)
-                    return False
+            # Capture the window
+            hwnd_dc = win32gui.GetWindowDC(hwnd)
+            mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+            save_dc = mfc_dc.CreateCompatibleDC()
 
-            except Exception as e:
-                print(f"  CopyPicture failed: {e}", flush=True)
-                return False
+            bitmap = win32ui.CreateBitmap()
+            bitmap.CreateCompatibleBitmap(mfc_dc, width, height)
+            save_dc.SelectObject(bitmap)
+
+            # Use PrintWindow for capture
+            result = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)
+
+            if result == 0:
+                save_dc.BitBlt((0, 0), (width, height), mfc_dc, (0, 0), win32con.SRCCOPY)
+
+            # Convert to PIL Image
+            bmpinfo = bitmap.GetInfo()
+            bmpstr = bitmap.GetBitmapBits(True)
+            img = Image.frombuffer(
+                'RGB',
+                (bmpinfo['bmWidth'], bmpinfo['bmHeight']),
+                bmpstr, 'raw', 'BGRX', 0, 1
+            )
+
+            # Crop to remove ribbon/formula bar (top ~180px) and status bar (bottom ~25px)
+            # These are approximate values for typical Excel window
+            crop_top = 180
+            crop_bottom = 25
+            if img.height > crop_top + crop_bottom + 100:
+                img = img.crop((0, crop_top, img.width, img.height - crop_bottom))
+
+            img.save(str(output_path))
+
+            # Cleanup
+            win32gui.DeleteObject(bitmap.GetHandle())
+            save_dc.DeleteDC()
+            mfc_dc.DeleteDC()
+            win32gui.ReleaseDC(hwnd, hwnd_dc)
+
+            return output_path.exists()
 
         except ImportError as e:
-            print(f"  Required modules not available: {e}", flush=True)
+            print(f"  Required Windows modules not available: {e}", flush=True)
             return False
         except Exception as e:
             print(f"  Screenshot failed: {e}", flush=True)
