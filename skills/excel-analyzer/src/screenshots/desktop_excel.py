@@ -125,8 +125,55 @@ class DesktopExcelScreenshotter:
         except Exception as e:
             print(f"  Could not set window size: {e}", flush=True)
 
-    # Approximate visible area at 100% zoom (rows x cols)
-    DETAIL_VIEW_SIZE = (40, 20)
+    # Target size for detail view in points (roughly 1600x900 pixels at 96 DPI)
+    # 1 point = 1/72 inch, 96 DPI means 1 point ≈ 1.33 pixels
+    DETAIL_TARGET_WIDTH_PT = 1200  # ~1600 pixels
+    DETAIL_TARGET_HEIGHT_PT = 675  # ~900 pixels
+
+    # Fallback if we can't calculate sizes
+    DETAIL_FALLBACK_SIZE = (40, 20)
+
+    def _calculate_detail_size(self, sheet) -> tuple[int, int]:
+        """Calculate rows and cols that fit within target pixel dimensions."""
+        try:
+            ws = sheet.api
+
+            # Calculate columns that fit within target width
+            total_width = 0
+            num_cols = 0
+            for col in range(1, 100):  # Max 100 columns
+                try:
+                    col_width_pt = ws.Columns(col).Width  # Width in points
+                    if total_width + col_width_pt > self.DETAIL_TARGET_WIDTH_PT:
+                        break
+                    total_width += col_width_pt
+                    num_cols = col
+                except Exception:
+                    break
+
+            # Calculate rows that fit within target height
+            total_height = 0
+            num_rows = 0
+            for row in range(1, 200):  # Max 200 rows
+                try:
+                    row_height_pt = ws.Rows(row).Height  # Height in points
+                    if total_height + row_height_pt > self.DETAIL_TARGET_HEIGHT_PT:
+                        break
+                    total_height += row_height_pt
+                    num_rows = row
+                except Exception:
+                    break
+
+            # Ensure minimum size
+            num_rows = max(num_rows, 10)
+            num_cols = max(num_cols, 5)
+
+            print(f"    Detail size: {num_rows} rows x {num_cols} cols (based on cell dimensions)", flush=True)
+            return (num_rows, num_cols)
+
+        except Exception as e:
+            print(f"    Could not calculate detail size: {e}, using fallback", flush=True)
+            return self.DETAIL_FALLBACK_SIZE
 
     def _capture_sheet(self, wb, sheet_info: SheetInfo) -> list[ScreenshotInfo]:
         """Capture screenshots of a single sheet using Range.CopyPicture."""
@@ -148,9 +195,10 @@ class DesktopExcelScreenshotter:
                     captured_at=datetime.now().isoformat(),
                 ))
 
-            # Capture 2: Detail view (fixed size from A1, like 100% zoom view)
+            # Capture 2: Detail view (size based on actual row/col dimensions)
+            detail_size = self._calculate_detail_size(sheet)
             detail_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_detail.png"
-            if self._capture_range_as_image(sheet, detail_path, fixed_size=self.DETAIL_VIEW_SIZE):
+            if self._capture_range_as_image(sheet, detail_path, fixed_size=detail_size):
                 screenshots.append(ScreenshotInfo(
                     sheet=sheet_info.name,
                     path=detail_path,
