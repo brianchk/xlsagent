@@ -97,6 +97,10 @@ class DesktopExcelScreenshotter:
                 sheet_screenshots = self._capture_sheet(wb, sheet_info)
                 screenshots.extend(sheet_screenshots)
 
+            # Capture individual charts
+            chart_screenshots = self._capture_charts(wb)
+            screenshots.extend(chart_screenshots)
+
             # Close workbook without saving
             wb.close()
 
@@ -282,6 +286,43 @@ class DesktopExcelScreenshotter:
         except Exception as e:
             print(f"  Screenshot failed: {e}", flush=True)
             return False
+
+    def _capture_charts(self, wb) -> list[ScreenshotInfo]:
+        """Capture individual chart images."""
+        screenshots = []
+        chart_dir = self.output_dir / "charts"
+        chart_dir.mkdir(exist_ok=True)
+
+        try:
+            for sheet in wb.sheets:
+                try:
+                    # Get charts via xlwings API
+                    charts = sheet.charts
+                    for i, chart in enumerate(charts):
+                        try:
+                            chart_name = chart.name or f"Chart_{i+1}"
+                            safe_name = self._sanitize_filename(f"{sheet.name}_{chart_name}")
+                            output_path = chart_dir / f"{safe_name}.png"
+
+                            # Export chart as image using Excel API
+                            chart.api.Export(str(output_path), "PNG")
+
+                            if output_path.exists():
+                                print(f"    Chart: {chart_name} ({sheet.name})", flush=True)
+                                screenshots.append(ScreenshotInfo(
+                                    sheet=sheet.name,
+                                    path=output_path,
+                                    captured_at=datetime.now().isoformat(),
+                                ))
+                        except Exception as e:
+                            print(f"    Could not export chart {i}: {e}", flush=True)
+                except Exception:
+                    continue
+
+        except Exception as e:
+            print(f"  Error capturing charts: {e}", flush=True)
+
+        return screenshots
 
     def _sanitize_filename(self, name: str) -> str:
         """Sanitize a string for use as a filename."""

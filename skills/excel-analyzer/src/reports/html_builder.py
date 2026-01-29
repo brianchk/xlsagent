@@ -331,7 +331,7 @@ class HTMLReportBuilder:
 
         # Charts
         if charts:
-            sections.append(self._build_charts_section(charts))
+            sections.append(self._build_charts_section(charts, name))
 
         # Pivot Tables
         if pivots:
@@ -489,12 +489,28 @@ class HTMLReportBuilder:
             <div class="screenshot-views">{imgs}</div>
         </section>'''
 
-    def _build_charts_section(self, charts) -> str:
+    def _build_charts_section(self, charts, sheet_name: str = "") -> str:
         """Build charts section for a sheet."""
         cards = ""
         for c in charts:
             title_html = f"<p><strong>Title:</strong> {self._escape(c.title)}</p>" if c.title else ""
             data_html = f"<p><strong>Data:</strong> <code>{self._escape(c.data_range)}</code></p>" if c.data_range else ""
+
+            # Check for chart image
+            chart_img = ""
+            if sheet_name:
+                # Look for chart image in screenshots/charts/
+                safe_sheet = self._sanitize_for_path(sheet_name)
+                safe_chart = self._sanitize_for_path(c.name)
+                img_path = self.output_dir / "screenshots" / "charts" / f"{safe_sheet}_{safe_chart}.png"
+                if img_path.exists():
+                    rel_path = f"../screenshots/charts/{safe_sheet}_{safe_chart}.png"
+                    chart_img = f'''
+                    <div class="chart-image">
+                        <a href="{rel_path}" target="_blank">
+                            <img src="{rel_path}" alt="{self._escape(c.name)}" loading="lazy" />
+                        </a>
+                    </div>'''
 
             cards += f'''
             <div class="item-card chart-card">
@@ -502,6 +518,7 @@ class HTMLReportBuilder:
                     <span class="item-type">{self._escape(c.chart_type)}</span>
                     <span class="item-name">{self._escape(c.name)}</span>
                 </div>
+                {chart_img}
                 <div class="item-details">
                     {title_html}
                     {data_html}
@@ -513,6 +530,14 @@ class HTMLReportBuilder:
             <h2>Charts ({len(charts)})</h2>
             <div class="item-grid">{cards}</div>
         </section>'''
+
+    def _sanitize_for_path(self, name: str) -> str:
+        """Sanitize a string for use in file paths."""
+        import re
+        result = re.sub(r'[<>:"/\\|?*]', '_', name)
+        if len(result) > 100:
+            result = result[:100]
+        return result
 
     def _build_pivots_section(self, pivots) -> str:
         """Build pivot tables section for a sheet."""
@@ -1493,6 +1518,20 @@ body {
 .item-details p {
     margin: 0.25rem 0;
     font-size: 0.9rem;
+}
+
+/* Chart images */
+.chart-image {
+    padding: 0.5rem;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+}
+
+.chart-image img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 4px;
 }
 
 /* Data tables */
