@@ -3,20 +3,21 @@ xls-extract: Comprehensive Excel workbook data extraction library.
 
 This library extracts structured data from Excel workbooks (.xlsx, .xlsm),
 including formulas, VBA macros, Power Query, pivot tables, charts, and more.
+It also generates HTML reports, Markdown documentation, and screenshots.
 
-Basic usage:
+Basic usage (data only):
     >>> from xls_extract import analyze
     >>> result = analyze("workbook.xlsx")
     >>> print(result.sheets)
     >>> print(result.formulas)
 
-For more control:
-    >>> from xls_extract import analyze, AnalysisOptions
-    >>> options = AnalysisOptions(extract_vba=True)
-    >>> result = analyze("workbook.xlsm", options)
+Full analysis with reports:
+    >>> from xls_extract import analyze_and_report
+    >>> result = analyze_and_report("workbook.xlsx", "./output")
+    >>> # Creates: output/index.html, output/README.md, output/screenshots/
 """
 
-from .analyze import analyze, open_workbook, AnalysisOptions
+from .analyze import analyze, analyze_and_report, open_workbook, AnalysisOptions
 from .models import (
     # Main result
     WorkbookAnalysis,
@@ -63,6 +64,7 @@ __author__ = "Brian Chan"
 __all__ = [
     # Main API
     "analyze",
+    "analyze_and_report",
     "open_workbook",
     "AnalysisOptions",
     # Main result

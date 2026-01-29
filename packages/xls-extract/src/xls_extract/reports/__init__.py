@@ -1,4 +1,4 @@
-"""Report generation for Excel analysis."""
+"""Report generators for Excel analysis output."""
 
 from .html_builder import HTMLReportBuilder
 from .markdown_builder import MarkdownReportBuilder

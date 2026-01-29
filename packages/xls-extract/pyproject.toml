@@ -38,17 +38,29 @@ classifiers = [
 ]
 
 dependencies = [
+    # Extraction
     "openpyxl>=3.1.0",
     "oletools>=0.60",
     "lxml>=5.0.0",
+    # Reports
+    "pygments>=2.17.0",
 ]
 
 [project.optional-dependencies]
+# Screenshots require Windows + Desktop Excel
+screenshots = [
+    "xlwings>=0.30.0",
+    "pillow>=10.0.0",
+    "pywin32>=306; sys_platform == 'win32'",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "mypy>=1.0.0",
     "ruff>=0.1.0",
+]
+all = [
+    "xls-extract[screenshots]",
 ]
 
 [project.urls]

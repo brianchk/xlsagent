@@ -5,26 +5,14 @@ description = "Comprehensive Excel workbook analyzer for Claude Code"
 requires-python = ">=3.11"
 
 dependencies = [
-    # Core extraction library
-    "xls-extract @ git+https://github.com/brianchk/xls-extract.git@main",
-
-    # Report generation
-    "jinja2>=3.1.0",           # HTML templating
-    "pygments>=2.17.0",        # Syntax highlighting
-
-    # Screenshots (Windows)
-    "xlwings>=0.30.0",         # Desktop Excel automation
-    "pillow>=10.0.0",          # Image processing
+    # xls-extract with all features (extraction + reports + screenshots)
+    "xls-extract[all] @ git+https://github.com/brianchk/xls-extract.git@main",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
-    "pytest-asyncio>=0.23.0",
-]
-windows = [
-    "pywin32>=306",            # Windows API for Excel screenshots
 ]
 
 [build-system]

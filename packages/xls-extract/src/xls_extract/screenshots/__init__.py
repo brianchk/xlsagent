@@ -1,4 +1,4 @@
-"""Screenshot capture via Desktop Excel (xlwings)."""
+"""Screenshot capture for Excel workbooks."""
 
 from .desktop_excel import DesktopExcelScreenshotter, capture_desktop_screenshots
 

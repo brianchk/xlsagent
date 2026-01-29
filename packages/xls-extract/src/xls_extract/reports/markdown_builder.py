@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from xls_extract import (
+from ..models import (
     FormulaCategory,
     SheetVisibility,
     WorkbookAnalysis,

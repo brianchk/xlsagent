@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from xls_extract import ScreenshotInfo, SheetInfo, SheetVisibility
+from ..models import ScreenshotInfo, SheetInfo, SheetVisibility
 
 
 class DesktopExcelScreenshotter:

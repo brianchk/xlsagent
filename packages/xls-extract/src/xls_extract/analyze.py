@@ -416,3 +416,73 @@ class WorkbookHandle:
             "max_row": sheet.max_row,
             "max_column": sheet.max_column,
         }
+
+
+def analyze_and_report(
+    file_path: str | Path,
+    output_dir: str | Path,
+    options: AnalysisOptions | None = None,
+    capture_screenshots: bool = True,
+) -> WorkbookAnalysis:
+    """Analyze an Excel workbook and generate complete reports.
+
+    This is the high-level entry point that:
+    1. Extracts all data from the workbook
+    2. Captures screenshots (Windows only, requires xlwings)
+    3. Generates HTML report
+    4. Generates Markdown documentation
+
+    Args:
+        file_path: Path to the Excel file (.xlsx or .xlsm).
+        output_dir: Directory to write reports and screenshots.
+        options: Optional extraction configuration.
+        capture_screenshots: Whether to capture screenshots (Windows only).
+
+    Returns:
+        WorkbookAnalysis containing all extracted data.
+
+    Example:
+        >>> from xls_extract import analyze_and_report
+        >>> result = analyze_and_report("workbook.xlsx", "./analysis")
+        >>> print(f"Report: {result.file_path.parent}/index.html")
+    """
+    import platform
+
+    path = Path(file_path)
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: Extract data
+    print(f"Analyzing: {path.name}", flush=True)
+    result = analyze(path, options)
+
+    # Step 2: Capture screenshots (Windows only)
+    if capture_screenshots and platform.system() == "Windows":
+        print("Capturing screenshots...", flush=True)
+        try:
+            from .screenshots import DesktopExcelScreenshotter
+            screenshotter = DesktopExcelScreenshotter(out_path / "screenshots")
+            result.screenshots = screenshotter.capture_all_sheets(path, result.sheets)
+            print(f"  Captured {len(result.screenshots)} screenshots", flush=True)
+        except ImportError:
+            print("  Screenshots unavailable (install with: pip install xls-extract[screenshots])", flush=True)
+        except Exception as e:
+            print(f"  Screenshot capture failed: {e}", flush=True)
+    elif capture_screenshots and platform.system() != "Windows":
+        print("Screenshots only available on Windows", flush=True)
+
+    # Step 3: Generate HTML report
+    print("Generating HTML report...", flush=True)
+    from .reports import HTMLReportBuilder
+    html_builder = HTMLReportBuilder(result, out_path)
+    html_path = html_builder.build()
+    print(f"  Created: {html_path}", flush=True)
+
+    # Step 4: Generate Markdown documentation
+    print("Generating Markdown documentation...", flush=True)
+    from .reports import MarkdownReportBuilder
+    md_builder = MarkdownReportBuilder(result, out_path)
+    md_builder.build()
+    print(f"  Created: {out_path}/README.md", flush=True)
+
+    return result
