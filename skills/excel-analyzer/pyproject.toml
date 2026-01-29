@@ -6,10 +6,7 @@ requires-python = ">=3.11"
 
 dependencies = [
     # Core extraction library
-    # For local development:
-    "xls-extract @ file:///${PROJECT_ROOT}/../../../packages/xls-extract",
-    # For production (uncomment and use your GitHub URL):
-    # "xls-extract @ git+ssh://git@github.com/brianchk/xls-extract.git@main",
+    "xls-extract @ git+https://github.com/brianchk/xls-extract.git@main",
 
     # Report generation
     "jinja2>=3.1.0",           # HTML templating
