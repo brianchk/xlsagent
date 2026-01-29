@@ -448,15 +448,21 @@ class HTMLReportBuilder:
 
     def _build_screenshot_section(self, screenshots) -> str:
         """Build screenshots section for a sheet."""
+        import re
+
         views = {}
+        birdseye_zoom = None
         for s in screenshots:
             filename = s.path.name
             if "_100." in filename:
                 views["normal"] = filename
-            elif "_65." in filename:
-                views["birdseye"] = filename
             else:
-                views["normal"] = filename
+                # Any other zoom level is bird's eye
+                views["birdseye"] = filename
+                # Extract zoom level from filename (e.g., "sheet_25.png" -> 25)
+                match = re.search(r'_(\d+)\.png$', filename)
+                if match:
+                    birdseye_zoom = match.group(1)
 
         imgs = ""
         if views.get("normal"):
@@ -468,9 +474,10 @@ class HTMLReportBuilder:
                 </a>
             </div>'''
         if views.get("birdseye"):
+            zoom_label = f"{birdseye_zoom}% (Fit All)" if birdseye_zoom else "Bird's Eye"
             imgs += f'''
             <div class="screenshot-view">
-                <span class="zoom-label">65% (Bird's Eye)</span>
+                <span class="zoom-label">{zoom_label}</span>
                 <a href="../screenshots/{views["birdseye"]}" target="_blank">
                     <img src="../screenshots/{views["birdseye"]}" alt="Bird's Eye View" loading="lazy" />
                 </a>
@@ -563,6 +570,12 @@ class HTMLReportBuilder:
 
     def _build_formulas_section(self, formulas) -> str:
         """Build formulas section for a sheet."""
+        # Filter out empty formulas
+        formulas = [f for f in formulas if f.formula_clean.strip() not in ("=", "")]
+
+        if not formulas:
+            return ""
+
         # Group by category
         by_cat = defaultdict(list)
         for f in formulas:
@@ -571,22 +584,33 @@ class HTMLReportBuilder:
         content = ""
         for cat, cat_formulas in sorted(by_cat.items(), key=lambda x: -len(x[1])):
             rows = ""
-            for f in cat_formulas[:20]:  # Limit per category
-                preview = f.formula_clean[:60]
-                if len(f.formula_clean) > 60:
-                    preview += "..."
-                rows += f'''
-                <tr>
-                    <td>{f.location.cell}</td>
-                    <td><code>{self._escape(preview)}</code></td>
+            for f in cat_formulas[:30]:  # Limit per category
+                formula_escaped = self._escape(f.formula_clean)
+                # Show preview with expand button for long formulas
+                if len(f.formula_clean) > 50:
+                    preview = self._escape(f.formula_clean[:50]) + "..."
+                    rows += f'''
+                <tr class="formula-row">
+                    <td class="cell-ref">{f.location.cell}</td>
+                    <td class="formula-cell">
+                        <code class="formula-preview">{preview}</code>
+                        <div class="formula-full collapsed"><code>{formula_escaped}</code></div>
+                        <button class="expand-btn" onclick="toggleFormula(this)">Show full</button>
+                    </td>
+                </tr>'''
+                else:
+                    rows += f'''
+                <tr class="formula-row">
+                    <td class="cell-ref">{f.location.cell}</td>
+                    <td class="formula-cell"><code>{formula_escaped}</code></td>
                 </tr>'''
 
-            more = f"<p class='more-note'>...and {len(cat_formulas) - 20} more</p>" if len(cat_formulas) > 20 else ""
+            more = f"<p class='more-note'>...and {len(cat_formulas) - 30} more</p>" if len(cat_formulas) > 30 else ""
 
             content += f'''
             <div class="formula-category">
                 <h4>{cat} ({len(cat_formulas)})</h4>
-                <table class="data-table">
+                <table class="data-table formula-table">
                     <thead><tr><th>Cell</th><th>Formula</th></tr></thead>
                     <tbody>{rows}</tbody>
                 </table>
@@ -597,6 +621,22 @@ class HTMLReportBuilder:
         <section id="formulas" class="content-section">
             <h2>Formulas ({len(formulas)})</h2>
             {content}
+            <script>
+            function toggleFormula(btn) {{
+                const row = btn.closest('.formula-cell');
+                const preview = row.querySelector('.formula-preview');
+                const full = row.querySelector('.formula-full');
+                if (full.classList.contains('collapsed')) {{
+                    full.classList.remove('collapsed');
+                    if (preview) preview.style.display = 'none';
+                    btn.textContent = 'Show less';
+                }} else {{
+                    full.classList.add('collapsed');
+                    if (preview) preview.style.display = 'inline';
+                    btn.textContent = 'Show full';
+                }}
+            }}
+            </script>
         </section>'''
 
     def _build_cf_section(self, cfs) -> str:
@@ -1486,6 +1526,49 @@ body {
 .formula-category h4 {
     margin-bottom: 0.5rem;
     color: var(--text-muted);
+}
+
+/* Formula table */
+.formula-table .cell-ref {
+    width: 60px;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.formula-cell {
+    position: relative;
+}
+
+.formula-cell code {
+    word-break: break-all;
+    white-space: pre-wrap;
+}
+
+.formula-full {
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    background: var(--card-bg);
+    border-radius: 4px;
+    border: 1px solid var(--border);
+}
+
+.formula-full.collapsed {
+    display: none;
+}
+
+.expand-btn {
+    margin-top: 0.25rem;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: pointer;
+    color: var(--primary);
+}
+
+.expand-btn:hover {
+    background: var(--border);
 }
 
 /* Screenshots */

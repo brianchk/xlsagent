@@ -19,7 +19,7 @@ class DesktopExcelScreenshotter:
 
     # Zoom levels
     ZOOM_NORMAL = 100
-    ZOOM_BIRDSEYE = 65
+    ZOOM_MIN = 25  # Minimum zoom for bird's eye view
 
     def __init__(self, output_dir: Path):
         """Initialize screenshotter.
@@ -147,17 +147,19 @@ class DesktopExcelScreenshotter:
                     captured_at=datetime.now().isoformat(),
                 ))
 
-            # Screenshot 2: Bird's eye view
-            self._set_zoom(sheet, self.ZOOM_BIRDSEYE)
-            time.sleep(0.3)
+            # Screenshot 2: Bird's eye view - zoom out until content fits
+            birdseye_zoom = self._calculate_fit_zoom(sheet, sheet_info)
+            if birdseye_zoom < self.ZOOM_NORMAL:
+                self._set_zoom(sheet, birdseye_zoom)
+                time.sleep(0.3)
 
-            birdseye_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_{self.ZOOM_BIRDSEYE}.png"
-            if self._take_screenshot(birdseye_path):
-                screenshots.append(ScreenshotInfo(
-                    sheet=sheet_info.name,
-                    path=birdseye_path,
-                    captured_at=datetime.now().isoformat(),
-                ))
+                birdseye_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_{birdseye_zoom}.png"
+                if self._take_screenshot(birdseye_path):
+                    screenshots.append(ScreenshotInfo(
+                        sheet=sheet_info.name,
+                        path=birdseye_path,
+                        captured_at=datetime.now().isoformat(),
+                    ))
 
             # Reset zoom
             self._set_zoom(sheet, self.ZOOM_NORMAL)
@@ -166,6 +168,39 @@ class DesktopExcelScreenshotter:
             print(f"  Error capturing sheet '{sheet_info.name}': {e}", flush=True)
 
         return screenshots
+
+    def _calculate_fit_zoom(self, sheet, sheet_info: SheetInfo) -> int:
+        """Calculate zoom level to fit all content in the window.
+
+        Returns zoom level between ZOOM_MIN and ZOOM_NORMAL.
+        """
+        try:
+            # Get used range dimensions from sheet info
+            rows = sheet_info.row_count or 50
+            cols = sheet_info.col_count or 20
+
+            # Approximate visible rows/cols at 100% zoom in our window
+            # Typical Excel: ~40 rows visible, ~15 columns visible at 100% in 1920x1200
+            visible_rows_100 = 40
+            visible_cols_100 = 15
+
+            # Calculate zoom needed to fit all rows and all columns
+            zoom_for_rows = int((visible_rows_100 / rows) * 100) if rows > 0 else 100
+            zoom_for_cols = int((visible_cols_100 / cols) * 100) if cols > 0 else 100
+
+            # Use the smaller zoom (more zoomed out) to fit both dimensions
+            zoom = min(zoom_for_rows, zoom_for_cols, self.ZOOM_NORMAL)
+
+            # Clamp to minimum
+            zoom = max(zoom, self.ZOOM_MIN)
+
+            # Round to nearest 5%
+            zoom = (zoom // 5) * 5
+
+            return zoom
+
+        except Exception:
+            return 50  # Default fallback
 
     def _set_zoom(self, sheet, zoom_level: int) -> None:
         """Set the zoom level for the active sheet."""

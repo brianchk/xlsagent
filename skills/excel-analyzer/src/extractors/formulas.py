@@ -139,6 +139,10 @@ class FormulaExtractor(BaseExtractor):
             # Clean up formula (translate prefixes)
             formula_clean = self._clean_formula(formula)
 
+            # Skip empty formulas (just "=" or whitespace after =)
+            if formula_clean.strip() == "=" or len(formula_clean.strip()) <= 1:
+                return None
+
             # Classify formula
             category = self._classify_formula(formula_clean)
 
