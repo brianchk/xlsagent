@@ -153,7 +153,8 @@ class DesktopExcelScreenshotter:
 
             # Screenshot 2: Bird's eye view - zoom out until content fits
             birdseye_zoom = self._calculate_fit_zoom(sheet, sheet_info)
-            if birdseye_zoom < self.ZOOM_NORMAL:
+            # Always capture bird's eye if different from normal (even if same due to small sheet)
+            if birdseye_zoom < self.ZOOM_NORMAL or sheet_info.row_count > 35 or sheet_info.col_count > 12:
                 self._set_zoom(sheet, birdseye_zoom)
                 time.sleep(0.3)
 
@@ -184,13 +185,16 @@ class DesktopExcelScreenshotter:
             cols = sheet_info.col_count or 20
 
             # Approximate visible rows/cols at 100% zoom in our window
-            # Typical Excel: ~40 rows visible, ~15 columns visible at 100% in 1920x1200
-            visible_rows_100 = 40
-            visible_cols_100 = 15
+            # Be conservative - assume less visible to ensure content fits
+            # At 100% zoom in 1920x1200: roughly 35 rows, 12 columns visible
+            visible_rows_100 = 35
+            visible_cols_100 = 12
 
             # Calculate zoom needed to fit all rows and all columns
             zoom_for_rows = int((visible_rows_100 / rows) * 100) if rows > 0 else 100
             zoom_for_cols = int((visible_cols_100 / cols) * 100) if cols > 0 else 100
+
+            print(f"      Sheet has {rows} rows x {cols} cols -> zoom: rows={zoom_for_rows}%, cols={zoom_for_cols}%", flush=True)
 
             # Use the smaller zoom (more zoomed out) to fit both dimensions
             zoom = min(zoom_for_rows, zoom_for_cols, self.ZOOM_NORMAL)
@@ -201,6 +205,7 @@ class DesktopExcelScreenshotter:
             # Round to nearest 5%
             zoom = (zoom // 5) * 5
 
+            print(f"      -> Using bird's eye zoom: {zoom}%", flush=True)
             return zoom
 
         except Exception:
