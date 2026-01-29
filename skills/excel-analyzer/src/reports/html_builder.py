@@ -868,25 +868,69 @@ class HTMLReportBuilder:
         content = ""
 
         if a.connections:
-            rows = ""
+            conn_cards = ""
             for c in a.connections:
+                # Connection string (truncated)
                 conn_str = c.connection_string or "-"
-                if len(conn_str) > 60:
-                    conn_str = conn_str[:60] + "..."
-                rows += f'''
-                <tr>
-                    <td>{self._escape(c.name)}</td>
-                    <td>{c.connection_type}</td>
-                    <td><code>{self._escape(conn_str)}</code></td>
-                </tr>'''
+                conn_str_display = conn_str[:80] + "..." if len(conn_str) > 80 else conn_str
+
+                # Command type badge
+                cmd_type_badge = ""
+                if c.command_type:
+                    badge_class = "dax" if c.is_dax else ""
+                    cmd_type_badge = f'<span class="cmd-type-badge {badge_class}">{c.command_type}</span>'
+
+                # DAX query section
+                dax_section = ""
+                if c.is_dax and c.dax_query:
+                    dax_section = f'''
+                    <div class="dax-query-section">
+                        <h5>DAX Query</h5>
+                        <pre class="code-block dax-code"><code>{self._escape(c.dax_query)}</code></pre>
+                    </div>'''
+
+                # Command text (if not DAX, show as SQL/command)
+                cmd_section = ""
+                if c.command_text and not c.is_dax:
+                    cmd_section = f'''
+                    <div class="command-section">
+                        <h5>Command</h5>
+                        <pre class="code-block"><code>{self._escape(c.command_text)}</code></pre>
+                    </div>'''
+
+                # Used by pivot caches
+                pivot_section = ""
+                if c.used_by_pivot_caches:
+                    pivot_links = ", ".join(c.used_by_pivot_caches)
+                    pivot_section = f'''
+                    <div class="used-by-section">
+                        <strong>Used by:</strong> {pivot_links}
+                    </div>'''
+
+                conn_cards += f'''
+                <div class="connection-card">
+                    <div class="connection-header">
+                        <h4>{self._escape(c.name)}</h4>
+                        <div class="connection-badges">
+                            <span class="conn-type-badge">{c.connection_type}</span>
+                            {cmd_type_badge}
+                        </div>
+                    </div>
+                    <div class="connection-details">
+                        {f'<p class="conn-desc">{self._escape(c.description)}</p>' if c.description else ''}
+                        <p><strong>Connection:</strong> <code>{self._escape(conn_str_display)}</code></p>
+                        {pivot_section}
+                        {dax_section}
+                        {cmd_section}
+                    </div>
+                </div>'''
 
             content += f'''
             <section class="content-section">
                 <h2>Data Connections ({len(a.connections)})</h2>
-                <table class="data-table">
-                    <thead><tr><th>Name</th><th>Type</th><th>Connection</th></tr></thead>
-                    <tbody>{rows}</tbody>
-                </table>
+                <div class="connections-grid">
+                    {conn_cards}
+                </div>
             </section>'''
 
         if a.external_refs:
@@ -1660,5 +1704,89 @@ footer {
     margin-bottom: 1rem;
     padding-bottom: 0.5rem;
     border-bottom: 1px solid var(--border);
+}
+
+/* Connection cards */
+.connections-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.connection-card {
+    background: var(--bg);
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+
+.connection-header {
+    padding: 1rem;
+    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    color: white;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.connection-header h4 {
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.connection-badges {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.conn-type-badge, .cmd-type-badge {
+    background: rgba(255,255,255,0.2);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+}
+
+.cmd-type-badge.dax {
+    background: rgba(255,215,0,0.3);
+    color: #fff;
+    font-weight: 600;
+}
+
+.connection-details {
+    padding: 1rem;
+}
+
+.connection-details p {
+    margin: 0.5rem 0;
+    font-size: 0.9rem;
+}
+
+.conn-desc {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.used-by-section {
+    margin: 0.75rem 0;
+    padding: 0.5rem;
+    background: var(--card-bg);
+    border-radius: 4px;
+    font-size: 0.9rem;
+}
+
+.dax-query-section, .command-section {
+    margin-top: 1rem;
+}
+
+.dax-query-section h5, .command-section h5 {
+    margin: 0 0 0.5rem 0;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+}
+
+.dax-code {
+    background: #1a1a2e;
 }
 """

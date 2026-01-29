@@ -230,7 +230,12 @@ class DataConnectionInfo:
     connection_type: str  # ODBC, OLEDB, Web, etc.
     connection_string: str | None = None
     command_text: str | None = None
+    command_type: str | None = None  # SQL, DAX, Table, etc.
     description: str | None = None
+    is_dax: bool = False
+    dax_query: str | None = None
+    connection_id: str | None = None
+    used_by_pivot_caches: list[str] = field(default_factory=list)
 
 
 @dataclass

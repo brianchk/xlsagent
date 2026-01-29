@@ -27,6 +27,15 @@ class ConnectionExtractor(BaseExtractor):
             Tuple of (connections, external_refs)
         """
         connections = self._extract_connections()
+
+        # Build map of connection ID -> pivot cache IDs that use it
+        conn_to_pivots = self._map_connections_to_pivots()
+
+        # Attach pivot cache info to connections
+        for conn in connections:
+            if conn.name in conn_to_pivots:
+                conn.used_by_pivot_caches = conn_to_pivots[conn.name]
+
         external_refs = self._extract_external_refs()
 
         return connections, external_refs
@@ -57,10 +66,12 @@ class ConnectionExtractor(BaseExtractor):
         """Parse a connection element."""
         try:
             name = conn.get("name", "Unknown")
+            conn_id = conn.get("id")
             conn_type = self._determine_connection_type(conn)
 
             connection_string = None
             command_text = None
+            command_type = None
             description = conn.get("description")
 
             # Extract ODBC/OLEDB properties
@@ -68,6 +79,15 @@ class ConnectionExtractor(BaseExtractor):
             if dbPr is not None:
                 connection_string = dbPr.get("connection")
                 command_text = dbPr.get("command")
+                command_type_attr = dbPr.get("commandType")
+                if command_type_attr:
+                    command_type = {
+                        "1": "SQL",
+                        "2": "Table",
+                        "3": "Default",
+                        "4": "DAX",
+                        "5": "Cube",
+                    }.get(command_type_attr, command_type_attr)
 
             # Extract web query properties
             webPr = conn.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}webPr")
@@ -81,12 +101,40 @@ class ConnectionExtractor(BaseExtractor):
                 conn_type = "Text File"
                 connection_string = textPr.get("sourceFile")
 
+            # Extract OLAP properties (Power Pivot / Analysis Services)
+            olapPr = conn.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}olapPr")
+            if olapPr is not None:
+                conn_type = "OLAP/Power Pivot"
+
+            # Detect DAX query in command text
+            is_dax = False
+            dax_query = None
+            if command_text:
+                # Clean up XML escape sequences
+                cleaned_text = command_text.replace("_x000d_", "").replace("_x000a_", "\n")
+
+                # Check if it looks like DAX
+                dax_keywords = ["EVALUATE", "SUMMARIZE", "CALCULATE", "FILTER", "ALL", "VALUES", "RELATED"]
+                command_upper = cleaned_text.upper()
+                if any(kw in command_upper for kw in dax_keywords):
+                    is_dax = True
+                    dax_query = cleaned_text
+                    if command_type is None:
+                        command_type = "DAX"
+                else:
+                    # Still clean up the command text for display
+                    command_text = cleaned_text
+
             return DataConnectionInfo(
                 name=name,
                 connection_type=conn_type,
                 connection_string=connection_string,
                 command_text=command_text,
+                command_type=command_type,
                 description=description,
+                is_dax=is_dax,
+                dax_query=dax_query,
+                connection_id=conn_id,
             )
         except Exception:
             return None
@@ -109,6 +157,54 @@ class ConnectionExtractor(BaseExtractor):
             return type_map.get(conn_type_attr, f"Type {conn_type_attr}")
 
         return "Unknown"
+
+    def _map_connections_to_pivots(self) -> dict[str, list[str]]:
+        """Map connection names to pivot cache definitions that use them."""
+        conn_to_pivots = {}
+
+        contents = self.list_xlsx_contents()
+
+        for item in contents:
+            if item.startswith("xl/pivotCache/pivotCacheDefinition") and item.endswith(".xml"):
+                content = self.read_xml_from_xlsx(item)
+                if content:
+                    try:
+                        root = etree.fromstring(content)
+
+                        # Get cache ID from filename
+                        cache_id = item.split("pivotCacheDefinition")[1].replace(".xml", "")
+
+                        # Check for connection reference
+                        cache_source = root.find(".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}cacheSource")
+                        if cache_source is not None:
+                            conn_id = cache_source.get("connectionId")
+                            if conn_id:
+                                # Try to find connection name by ID
+                                conn_name = self._get_connection_name_by_id(conn_id)
+                                if conn_name:
+                                    if conn_name not in conn_to_pivots:
+                                        conn_to_pivots[conn_name] = []
+                                    conn_to_pivots[conn_name].append(f"PivotCache{cache_id}")
+                    except Exception:
+                        pass
+
+        return conn_to_pivots
+
+    def _get_connection_name_by_id(self, conn_id: str) -> str | None:
+        """Get connection name by its ID."""
+        content = self.read_xml_from_xlsx("xl/connections.xml")
+        if not content:
+            return None
+
+        try:
+            root = etree.fromstring(content)
+            for conn in root.findall(".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}connection"):
+                if conn.get("id") == conn_id:
+                    return conn.get("name")
+        except Exception:
+            pass
+
+        return None
 
     def _extract_external_refs(self) -> list[ExternalRefInfo]:
         """Extract external workbook references from formulas."""
