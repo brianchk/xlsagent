@@ -96,9 +96,19 @@ def analyze_workbook(file_path: Path) -> WorkbookAnalysis:
         elif result is not None:
             setattr(analysis, attr_name, result)
 
+    # Data connections (needs workbook for external ref scanning)
+    print("  Extracting: Data connections...", flush=True)
+    try:
+        conn_extractor = ConnectionExtractor(wb, file_path)
+        connections, external_refs = conn_extractor.extract()
+        analysis.connections = connections
+        analysis.external_refs = external_refs
+    except Exception as e:
+        analysis.errors.append(ExtractionError(extractor="connections", message=str(e)))
+
     wb.close()
 
-    # VBA extraction (separate workbook load)
+    # VBA extraction (reads directly from file, no openpyxl workbook needed)
     print("  Extracting: VBA modules...", flush=True)
     try:
         vba_extractor = VBAExtractor(None, file_path)
@@ -108,7 +118,7 @@ def analyze_workbook(file_path: Path) -> WorkbookAnalysis:
     except Exception as e:
         analysis.errors.append(ExtractionError(extractor="vba", message=str(e)))
 
-    # Power Query extraction
+    # Power Query extraction (reads directly from xlsx)
     print("  Extracting: Power Query...", flush=True)
     try:
         pq_extractor = PowerQueryExtractor(None, file_path)
@@ -116,7 +126,7 @@ def analyze_workbook(file_path: Path) -> WorkbookAnalysis:
     except Exception as e:
         analysis.errors.append(ExtractionError(extractor="power_query", message=str(e)))
 
-    # Form controls
+    # Form controls (reads directly from xlsx)
     print("  Extracting: Form controls...", flush=True)
     try:
         ctrl_extractor = ControlExtractor(None, file_path)
@@ -124,19 +134,11 @@ def analyze_workbook(file_path: Path) -> WorkbookAnalysis:
     except Exception as e:
         analysis.errors.append(ExtractionError(extractor="controls", message=str(e)))
 
-    # Data connections
-    print("  Extracting: Data connections...", flush=True)
-    try:
-        conn_extractor = ConnectionExtractor(None, file_path)
-        analysis.data_connections = conn_extractor.extract()
-    except Exception as e:
-        analysis.errors.append(ExtractionError(extractor="connections", message=str(e)))
-
     # DAX/Power Pivot detection
     print("  Detecting: DAX/Power Pivot...", flush=True)
     try:
         dax_detector = DAXDetector(None, file_path)
-        analysis.has_dax, analysis.dax_detection_note = dax_detector.detect()
+        analysis.has_dax, analysis.dax_detection_note = dax_detector.extract()
     except Exception as e:
         analysis.errors.append(ExtractionError(extractor="dax", message=str(e)))
 
