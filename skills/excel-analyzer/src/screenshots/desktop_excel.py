@@ -293,19 +293,25 @@ class DesktopExcelScreenshotter:
         chart_dir = self.output_dir / "charts"
         chart_dir.mkdir(exist_ok=True)
 
+        print("  Capturing charts...", flush=True)
         try:
             for sheet in wb.sheets:
                 try:
-                    # Get charts via xlwings API
-                    charts = sheet.charts
-                    for i, chart in enumerate(charts):
+                    # Access charts through Excel COM API directly
+                    excel_sheet = sheet.api
+                    chart_objects = excel_sheet.ChartObjects()
+
+                    for i in range(1, chart_objects.Count + 1):  # Excel is 1-indexed
                         try:
-                            chart_name = chart.name or f"Chart_{i+1}"
+                            chart_obj = chart_objects.Item(i)
+                            chart = chart_obj.Chart
+                            chart_name = chart_obj.Name or f"Chart_{i}"
+
                             safe_name = self._sanitize_filename(f"{sheet.name}_{chart_name}")
                             output_path = chart_dir / f"{safe_name}.png"
 
-                            # Export chart as image using Excel API
-                            chart.api.Export(str(output_path), "PNG")
+                            # Export chart as image
+                            chart.Export(str(output_path), "PNG")
 
                             if output_path.exists():
                                 print(f"    Chart: {chart_name} ({sheet.name})", flush=True)
@@ -316,7 +322,8 @@ class DesktopExcelScreenshotter:
                                 ))
                         except Exception as e:
                             print(f"    Could not export chart {i}: {e}", flush=True)
-                except Exception:
+                except Exception as e:
+                    # Sheet might not have charts or API access failed
                     continue
 
         except Exception as e:
