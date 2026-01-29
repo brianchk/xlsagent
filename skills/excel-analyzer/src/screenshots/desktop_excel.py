@@ -135,6 +135,10 @@ class DesktopExcelScreenshotter:
             sheet = wb.sheets[sheet_info.name]
             sheet.activate()
 
+            # Hide UI elements to maximize sheet area
+            app = sheet.book.app
+            ui_state = self._hide_excel_ui(app)
+
             # Scroll to top-left
             sheet.range("A1").select()
             time.sleep(0.3)
@@ -169,10 +173,72 @@ class DesktopExcelScreenshotter:
             # Reset zoom
             self._set_zoom(sheet, self.ZOOM_NORMAL)
 
+            # Restore UI elements
+            self._restore_excel_ui(app, ui_state)
+
         except Exception as e:
             print(f"  Error capturing sheet '{sheet_info.name}': {e}", flush=True)
+            # Try to restore UI even on error
+            try:
+                self._restore_excel_ui(app, ui_state)
+            except Exception:
+                pass
 
         return screenshots
+
+    def _hide_excel_ui(self, app) -> dict:
+        """Hide Excel UI elements to maximize sheet area. Returns previous state."""
+        state = {}
+        try:
+            api = app.api
+
+            # Save current state
+            state['formula_bar'] = api.DisplayFormulaBar
+            state['status_bar'] = api.DisplayStatusBar
+
+            # Hide formula bar and status bar
+            api.DisplayFormulaBar = False
+            api.DisplayStatusBar = False
+
+            # Minimize ribbon (collapse it)
+            try:
+                api.ExecuteExcel4Macro('SHOW.TOOLBAR("Ribbon",False)')
+            except Exception:
+                try:
+                    # Alternative: use CommandBars
+                    api.CommandBars.ExecuteMso("MinimizeRibbon")
+                except Exception:
+                    pass
+
+            time.sleep(0.2)  # Let UI update
+
+        except Exception as e:
+            print(f"    Warning: Could not hide UI elements: {e}", flush=True)
+
+        return state
+
+    def _restore_excel_ui(self, app, state: dict) -> None:
+        """Restore Excel UI elements to previous state."""
+        try:
+            api = app.api
+
+            # Restore formula bar and status bar
+            if 'formula_bar' in state:
+                api.DisplayFormulaBar = state['formula_bar']
+            if 'status_bar' in state:
+                api.DisplayStatusBar = state['status_bar']
+
+            # Restore ribbon
+            try:
+                api.ExecuteExcel4Macro('SHOW.TOOLBAR("Ribbon",True)')
+            except Exception:
+                try:
+                    api.CommandBars.ExecuteMso("MinimizeRibbon")  # Toggle back
+                except Exception:
+                    pass
+
+        except Exception as e:
+            print(f"    Warning: Could not restore UI elements: {e}", flush=True)
 
     def _calculate_fit_zoom(self, sheet, sheet_info: SheetInfo) -> int:
         """Calculate zoom level to fit all content in the window.
@@ -272,7 +338,7 @@ class DesktopExcelScreenshotter:
             if result == 0:
                 save_dc.BitBlt((0, 0), (width, height), mfc_dc, (0, 0), win32con.SRCCOPY)
 
-            # Convert to PIL Image
+            # Convert to PIL Image and save
             bmpinfo = bitmap.GetInfo()
             bmpstr = bitmap.GetBitmapBits(True)
             img = Image.frombuffer(
@@ -281,13 +347,7 @@ class DesktopExcelScreenshotter:
                 bmpstr, 'raw', 'BGRX', 0, 1
             )
 
-            # Crop to remove ribbon/formula bar (top ~180px) and status bar (bottom ~25px)
-            # These are approximate values for typical Excel window
-            crop_top = 180
-            crop_bottom = 25
-            if img.height > crop_top + crop_bottom + 100:
-                img = img.crop((0, crop_top, img.width, img.height - crop_bottom))
-
+            # No cropping - UI elements are hidden programmatically
             img.save(str(output_path))
 
             # Cleanup
