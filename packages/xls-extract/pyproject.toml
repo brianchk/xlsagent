@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xls-extract"
+version = "0.1.0"
+description = "Comprehensive Excel workbook data extraction library"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Brian Chan" }
+]
+keywords = [
+    "excel",
+    "xlsx",
+    "xlsm",
+    "spreadsheet",
+    "extraction",
+    "analysis",
+    "openpyxl",
+    "vba",
+    "power-query",
+    "formulas",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Spreadsheet",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "openpyxl>=3.1.0",
+    "oletools>=0.60",
+    "lxml>=5.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/brianchk/xls-extract"
+Documentation = "https://github.com/brianchk/xls-extract#readme"
+Repository = "https://github.com/brianchk/xls-extract"
+Issues = "https://github.com/brianchk/xls-extract/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xls_extract"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "D", "UP", "ANN", "S", "B", "C4", "DTZ", "T10", "ISC", "PIE", "PT", "RSE", "RET", "SIM", "TID", "ARG", "PL", "TRY", "RUF"]
+ignore = ["D100", "D104", "ANN101", "ANN102", "ANN401", "PLR0913"]
+
+[tool.ruff.lint.pydocstring]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --cov=xls_extract --cov-report=term-missing"

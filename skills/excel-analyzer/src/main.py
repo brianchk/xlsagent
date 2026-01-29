@@ -1,4 +1,10 @@
-"""Excel Workbook Analyzer - Extracts and documents Excel workbook contents."""
+"""Excel Workbook Analyzer - Extracts and documents Excel workbook contents.
+
+This skill uses xls-extract for core extraction and adds:
+- Screenshot capture via Desktop Excel (Windows)
+- HTML report generation
+- Markdown documentation
+"""
 
 from __future__ import annotations
 
@@ -9,12 +15,15 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from .models import (
+# Import from xls-extract package
+from xls_extract import (
+    analyze as xls_analyze,
+    AnalysisOptions,
     WorkbookAnalysis,
     ExtractionError,
     ExtractionWarning,
 )
-from .extractors import (
+from xls_extract.extractors import (
     SheetExtractor,
     FormulaExtractor,
     NamedRangeExtractor,
@@ -35,6 +44,8 @@ from .extractors import (
     ConnectionExtractor,
     DAXDetector,
 )
+
+# Local modules for skill-specific features
 from .reports.html_builder import HTMLReportBuilder
 from .reports.markdown_builder import MarkdownReportBuilder
 

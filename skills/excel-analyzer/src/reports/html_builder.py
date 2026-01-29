@@ -11,7 +11,7 @@ from pygments import highlight
 from pygments.lexers import VbNetLexer, get_lexer_by_name
 from pygments.formatters import HtmlFormatter
 
-from ..models import SheetVisibility, WorkbookAnalysis, SheetInfo
+from xls_extract import SheetVisibility, WorkbookAnalysis, SheetInfo
 
 
 class HTMLReportBuilder:

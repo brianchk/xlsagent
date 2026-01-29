@@ -5,13 +5,19 @@ description = "Comprehensive Excel workbook analyzer for Claude Code"
 requires-python = ">=3.11"
 
 dependencies = [
-    "openpyxl>=3.1.0",        # Excel parsing
-    "oletools>=0.60",          # VBA extraction
+    # Core extraction library
+    # For local development:
+    "xls-extract @ file:///${PROJECT_ROOT}/../../../packages/xls-extract",
+    # For production (uncomment and use your GitHub URL):
+    # "xls-extract @ git+ssh://git@github.com/brianchk/xls-extract.git@main",
+
+    # Report generation
     "jinja2>=3.1.0",           # HTML templating
     "pygments>=2.17.0",        # Syntax highlighting
-    "pydantic>=2.5.0",         # Data models
-    "lxml>=5.0.0",             # XML parsing
-    "xlwings>=0.30.0",         # Desktop Excel automation (screenshots)
+
+    # Screenshots (Windows)
+    "xlwings>=0.30.0",         # Desktop Excel automation
+    "pillow>=10.0.0",          # Image processing
 ]
 
 [project.optional-dependencies]
