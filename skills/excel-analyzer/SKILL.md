@@ -59,9 +59,10 @@ Creates an output directory with:
 ## Requirements
 
 - Python 3.11+
-- Microsoft Excel installed (for screenshots)
-- macOS: Grant Terminal automation access to Excel (System Settings > Privacy & Security > Automation)
-- Windows: pywin32 package (installed automatically)
+- **Screenshots (Windows only):**
+  - Microsoft Excel installed
+  - pywin32 and pillow packages (installed automatically)
+- **macOS:** Screenshots not supported due to Excel automation limitations. Analysis still works fully.
 
 ## First Run
 
@@ -69,15 +70,33 @@ The skill will automatically set up its virtual environment and install dependen
 
 ## Limitations
 
+- **Screenshots (macOS)**: Not supported due to Excel automation limitations (security dialogs cannot be suppressed). Use `--no-screenshots` or run on Windows.
 - **DAX/Power Pivot**: Can detect presence but cannot fully extract DAX formulas (proprietary format).
 - **Very Hidden Sheets**: Documented but screenshots not available (requires VBA to unhide).
 - **ActiveX Controls**: Limited extraction due to complex OLE embedding.
-- **Screenshots**: Require Desktop Excel to be installed and automation permissions granted.
+
+## CLI Usage
+
+Can also be run directly from command line:
+
+```bash
+cd skills/excel-analyzer
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+python -m src.main /path/to/workbook.xlsx -o ./output
+```
 
 ## Examples
 
+As a Claude skill:
 ```
 /analyze-excel ~/Downloads/quarterly-report.xlsx
 /analyze-excel /Users/brian/Documents/budget.xlsm -o ./budget-analysis
 /analyze-excel ./data.xlsx --no-screenshots
+```
+
+As CLI:
+```bash
+python -m src.main quarterly-report.xlsx
+python -m src.main budget.xlsm -o ./budget-analysis
+python -m src.main data.xlsx --no-screenshots
 ```
