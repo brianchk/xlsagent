@@ -180,21 +180,29 @@ class DesktopExcelScreenshotter:
         Returns zoom level between ZOOM_MIN and ZOOM_NORMAL.
         """
         try:
-            # Get used range dimensions from sheet info
-            rows = sheet_info.row_count or 50
-            cols = sheet_info.col_count or 20
+            # Get used range directly from Excel for accuracy
+            try:
+                used_range = sheet.api.UsedRange
+                rows = used_range.Rows.Count
+                cols = used_range.Columns.Count
+                print(f"      Excel UsedRange: {rows} rows x {cols} cols", flush=True)
+            except Exception:
+                # Fallback to extracted data
+                rows = sheet_info.row_count or 50
+                cols = sheet_info.col_count or 20
+                print(f"      Using extracted data: {rows} rows x {cols} cols", flush=True)
 
             # Approximate visible rows/cols at 100% zoom in our window
             # Be conservative - assume less visible to ensure content fits
-            # At 100% zoom in 1920x1200: roughly 35 rows, 12 columns visible
-            visible_rows_100 = 35
-            visible_cols_100 = 12
+            # At 100% zoom in 1920x1200: roughly 30 rows, 10 columns visible
+            visible_rows_100 = 30
+            visible_cols_100 = 10
 
             # Calculate zoom needed to fit all rows and all columns
             zoom_for_rows = int((visible_rows_100 / rows) * 100) if rows > 0 else 100
             zoom_for_cols = int((visible_cols_100 / cols) * 100) if cols > 0 else 100
 
-            print(f"      Sheet has {rows} rows x {cols} cols -> zoom: rows={zoom_for_rows}%, cols={zoom_for_cols}%", flush=True)
+            print(f"      Zoom needed: rows={zoom_for_rows}%, cols={zoom_for_cols}%", flush=True)
 
             # Use the smaller zoom (more zoomed out) to fit both dimensions
             zoom = min(zoom_for_rows, zoom_for_cols, self.ZOOM_NORMAL)
