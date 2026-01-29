@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import platform
 import sys
 from pathlib import Path
 
@@ -252,22 +253,43 @@ def main() -> int:
         # Run analysis
         analysis = analyze_workbook(file_path)
 
-        # Capture screenshots
+        # Capture screenshots (Windows only)
         if not args.no_screenshots:
-            print("Capturing screenshots via Desktop Excel...", flush=True)
-            try:
-                screenshots = capture_screenshots(file_path, analysis.sheets, output_dir)
-                if screenshots:
-                    analysis.screenshots = screenshots
-                    print(f"  Captured {len(screenshots)} screenshots", flush=True)
-                else:
-                    print("  No screenshots captured", flush=True)
-            except Exception as e:
-                print(f"  Warning: Could not capture screenshots: {e}", flush=True)
-                analysis.warnings.append(ExtractionWarning(
-                    extractor="screenshots",
-                    message=f"Could not capture screenshots: {e}",
-                ))
+            if platform.system() == "Darwin":
+                # macOS - screenshots not supported due to Excel automation limitations
+                print("\n" + "=" * 60, flush=True)
+                print("NOTE: Screenshots are only supported on Windows.", flush=True)
+                print("macOS Excel has automation limitations that prevent", flush=True)
+                print("reliable suppression of security dialogs.", flush=True)
+                print("=" * 60, flush=True)
+                print("\nOptions:", flush=True)
+                print("  [c] Continue without screenshots", flush=True)
+                print("  [q] Quit", flush=True)
+                try:
+                    choice = input("\nYour choice (c/q): ").strip().lower()
+                    if choice == 'q':
+                        print("Aborted.", flush=True)
+                        return 1
+                    print("\nContinuing without screenshots...\n", flush=True)
+                except (EOFError, KeyboardInterrupt):
+                    # Non-interactive mode - continue without screenshots
+                    print("\nNon-interactive mode - continuing without screenshots...\n", flush=True)
+            else:
+                # Windows - full screenshot support
+                print("Capturing screenshots via Desktop Excel...", flush=True)
+                try:
+                    screenshots = capture_screenshots(file_path, analysis.sheets, output_dir)
+                    if screenshots:
+                        analysis.screenshots = screenshots
+                        print(f"  Captured {len(screenshots)} screenshots", flush=True)
+                    else:
+                        print("  No screenshots captured", flush=True)
+                except Exception as e:
+                    print(f"  Warning: Could not capture screenshots: {e}", flush=True)
+                    analysis.warnings.append(ExtractionWarning(
+                        extractor="screenshots",
+                        message=f"Could not capture screenshots: {e}",
+                    ))
 
         # Generate reports
         generate_reports(analysis, output_dir)

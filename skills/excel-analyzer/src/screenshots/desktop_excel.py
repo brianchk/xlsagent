@@ -1,9 +1,8 @@
-"""Desktop Excel screenshot capture via xlwings (macOS/Windows)."""
+"""Desktop Excel screenshot capture via xlwings (Windows only)."""
 
 from __future__ import annotations
 
 import platform
-import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +11,7 @@ from ..models import ScreenshotInfo, SheetInfo, SheetVisibility
 
 
 class DesktopExcelScreenshotter:
-    """Captures screenshots of Excel sheets via desktop Excel application."""
+    """Captures screenshots of Excel sheets via desktop Excel application (Windows only)."""
 
     # Window dimensions for screenshots
     WINDOW_WIDTH = 1920
@@ -30,7 +29,6 @@ class DesktopExcelScreenshotter:
         """
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.system = platform.system()
 
     def capture_all_sheets(
         self,
@@ -46,10 +44,15 @@ class DesktopExcelScreenshotter:
         Returns:
             List of ScreenshotInfo objects
         """
+        # Only supported on Windows
+        if platform.system() != "Windows":
+            print("  Screenshots only supported on Windows", flush=True)
+            return []
+
         try:
             import xlwings as xw
         except ImportError:
-            print("  xlwings not installed, skipping desktop screenshots", flush=True)
+            print("  xlwings not installed, skipping screenshots", flush=True)
             return []
 
         screenshots = []
@@ -57,44 +60,30 @@ class DesktopExcelScreenshotter:
         # Open Excel
         print("  Opening Excel...", flush=True)
         try:
-            # Use visible=True so we can screenshot
             app = xw.App(visible=True, add_book=False)
-            # Suppress all prompts and alerts
             app.display_alerts = False
             app.screen_updating = True
-
-            if self.system == "Windows":
-                # Windows-specific settings
-                try:
-                    app.api.AskToUpdateLinks = False
-                    app.api.AutomationSecurity = 3  # msoAutomationSecurityForceDisable
-                except Exception:
-                    pass
+            # Windows-specific: suppress dialogs
+            try:
+                app.api.AskToUpdateLinks = False
+                app.api.AutomationSecurity = 3  # msoAutomationSecurityForceDisable
+            except Exception:
+                pass
         except Exception as e:
             print(f"  Could not start Excel: {e}", flush=True)
             return []
 
         try:
-            # Open the workbook read-only, suppressing prompts
+            # Open workbook read-only
             print(f"  Opening workbook: {file_path.name}", flush=True)
+            wb = app.books.open(
+                str(file_path),
+                read_only=True,
+                update_links=False,
+                ignore_read_only_recommended=True,
+            )
 
-            if self.system == "Darwin":
-                # On macOS, use AppleScript with all suppression options
-                wb = self._open_workbook_macos(app, file_path)
-            else:
-                # Windows: use xlwings with suppression options
-                wb = app.books.open(
-                    str(file_path),
-                    read_only=True,
-                    update_links=False,
-                    ignore_read_only_recommended=True,
-                )
-
-            if wb is None:
-                print("  Failed to open workbook", flush=True)
-                return []
-
-            # Set window size
+            # Set window size and position
             self._set_window_size(app)
 
             # Give Excel time to render
@@ -114,7 +103,6 @@ class DesktopExcelScreenshotter:
         except Exception as e:
             print(f"  Error during screenshot capture: {e}", flush=True)
         finally:
-            # Quit Excel
             try:
                 app.quit()
             except Exception:
@@ -122,109 +110,14 @@ class DesktopExcelScreenshotter:
 
         return screenshots
 
-    def _open_workbook_macos(self, app, file_path: Path):
-        """Open workbook on macOS with all dialogs suppressed."""
-        # Use xlwings to open, then dismiss dialogs via AppleScript
-        # The update_links=False should suppress the external links dialog
-        wb = app.books.open(
-            str(file_path),
-            read_only=True,
-            update_links=False,
-            ignore_read_only_recommended=True,
-        )
-
-        # Wait for file to open and dialogs to appear
-        time.sleep(1)
-
-        # Dismiss any dialogs that appeared (macros, security, etc.)
-        self._dismiss_all_dialogs_macos()
-
-        return wb
-
-    def _dismiss_all_dialogs_macos(self) -> None:
-        """Dismiss all Excel dialogs and security warnings on macOS."""
-        # Try multiple times as dialogs may appear sequentially
-        for _ in range(3):
-            script = '''
-            tell application "System Events"
-                tell process "Microsoft Excel"
-                    set frontmost to true
-
-                    -- Dismiss modal dialogs (sheets)
-                    try
-                        if exists sheet 1 of window 1 then
-                            -- Try common button names
-                            repeat with btnName in {"Disable Macros", "Don't Update", "No", "Cancel", "Don't Enable", "Disable Content", "OK"}
-                                try
-                                    if exists button btnName of sheet 1 of window 1 then
-                                        click button btnName of sheet 1 of window 1
-                                        delay 0.3
-                                        exit repeat
-                                    end if
-                                end try
-                            end repeat
-                        end if
-                    end try
-
-                    -- Dismiss security warning banner (the yellow bar)
-                    -- Look for the close button (X) on the message bar
-                    try
-                        set allGroups to every group of window 1
-                        repeat with g in allGroups
-                            try
-                                -- Look for buttons that might close the security bar
-                                set allButtons to every button of g
-                                repeat with b in allButtons
-                                    set btnDesc to description of b
-                                    if btnDesc contains "close" or btnDesc contains "dismiss" then
-                                        click b
-                                        delay 0.2
-                                    end if
-                                end repeat
-                            end try
-                        end repeat
-                    end try
-
-                    -- Press Escape as fallback for any remaining dialogs
-                    try
-                        key code 53
-                    end try
-                end tell
-            end tell
-            '''
-            subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                timeout=10
-            )
-            time.sleep(0.3)
-
     def _set_window_size(self, app) -> None:
         """Set Excel window to standard size for consistent screenshots."""
         try:
-            if self.system == "Darwin":
-                # macOS: Use AppleScript to resize and position window
-                script = f'''
-                tell application "Microsoft Excel"
-                    activate
-                    set bounds of window 1 to {{0, 25, {self.WINDOW_WIDTH}, {self.WINDOW_HEIGHT}}}
-                end tell
-                '''
-                subprocess.run(
-                    ["osascript", "-e", script],
-                    capture_output=True,
-                    timeout=5
-                )
-            else:
-                # Windows: Use xlwings API
-                try:
-                    app.api.ActiveWindow.WindowState = -4143  # xlNormal
-                    app.api.ActiveWindow.Top = 0
-                    app.api.ActiveWindow.Left = 0
-                    app.api.ActiveWindow.Width = self.WINDOW_WIDTH
-                    app.api.ActiveWindow.Height = self.WINDOW_HEIGHT
-                except Exception:
-                    pass
+            app.api.ActiveWindow.WindowState = -4143  # xlNormal
+            app.api.ActiveWindow.Top = 0
+            app.api.ActiveWindow.Left = 0
+            app.api.ActiveWindow.Width = self.WINDOW_WIDTH
+            app.api.ActiveWindow.Height = self.WINDOW_HEIGHT
         except Exception as e:
             print(f"  Could not set window size: {e}", flush=True)
 
@@ -240,8 +133,6 @@ class DesktopExcelScreenshotter:
 
             # Scroll to top-left
             sheet.range("A1").select()
-
-            # Give time for rendering
             time.sleep(0.3)
 
             # Screenshot 1: Normal view (100% zoom)
@@ -268,7 +159,7 @@ class DesktopExcelScreenshotter:
                     captured_at=datetime.now().isoformat(),
                 ))
 
-            # Reset zoom to normal
+            # Reset zoom
             self._set_zoom(sheet, self.ZOOM_NORMAL)
 
         except Exception as e:
@@ -279,95 +170,12 @@ class DesktopExcelScreenshotter:
     def _set_zoom(self, sheet, zoom_level: int) -> None:
         """Set the zoom level for the active sheet."""
         try:
-            if self.system == "Darwin":
-                # macOS: Use AppleScript to set zoom
-                script = f'''
-                tell application "Microsoft Excel"
-                    set view of active window to normal view
-                    set zoom of active window to {zoom_level}
-                end tell
-                '''
-                subprocess.run(
-                    ["osascript", "-e", script],
-                    capture_output=True,
-                    timeout=5
-                )
-            else:
-                # Windows: Use xlwings API
-                sheet.book.app.api.ActiveWindow.Zoom = zoom_level
+            sheet.book.app.api.ActiveWindow.Zoom = zoom_level
         except Exception as e:
             print(f"  Could not set zoom to {zoom_level}%: {e}", flush=True)
 
     def _take_screenshot(self, output_path: Path) -> bool:
-        """Take a screenshot of the Excel window only."""
-        if self.system == "Darwin":
-            return self._screenshot_macos(output_path)
-        elif self.system == "Windows":
-            return self._screenshot_windows(output_path)
-        else:
-            print(f"  Unsupported platform: {self.system}", flush=True)
-            return False
-
-    def _screenshot_macos(self, output_path: Path) -> bool:
-        """Take screenshot of Excel window on macOS using screencapture."""
-        try:
-            # Bring Excel to front
-            subprocess.run(
-                ["osascript", "-e", 'tell application "Microsoft Excel" to activate'],
-                capture_output=True,
-                timeout=5
-            )
-            time.sleep(0.2)
-
-            # Get the window position and size via System Events
-            script = '''
-            tell application "System Events"
-                set excelProcess to first application process whose name is "Microsoft Excel"
-                set frontWindow to window 1 of excelProcess
-                set winPos to position of frontWindow
-                set winSize to size of frontWindow
-                return {item 1 of winPos, item 2 of winPos, item 1 of winSize, item 2 of winSize}
-            end tell
-            '''
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-
-            if result.returncode != 0 or not result.stdout.strip():
-                print(f"  Could not get Excel window bounds: {result.stderr}", flush=True)
-                return False
-
-            # Parse the bounds: x, y, width, height
-            bounds = result.stdout.strip().split(", ")
-            if len(bounds) != 4:
-                print(f"  Invalid window bounds: {result.stdout}", flush=True)
-                return False
-
-            x, y, w, h = [int(b) for b in bounds]
-
-            # Capture the window region
-            region = f"{x},{y},{w},{h}"
-            capture_result = subprocess.run(
-                ["screencapture", f"-R{region}", "-x", "-o", str(output_path)],
-                capture_output=True,
-                timeout=10
-            )
-
-            if not output_path.exists():
-                print(f"  Screenshot failed: {capture_result.stderr.decode() if capture_result.stderr else 'unknown error'}", flush=True)
-                return False
-
-            return True
-
-        except Exception as e:
-            print(f"  macOS screenshot failed: {e}", flush=True)
-            return False
-
-    def _screenshot_windows(self, output_path: Path) -> bool:
-        """Take screenshot of Excel window on Windows using win32gui + PIL."""
+        """Take a screenshot of the Excel window."""
         try:
             import win32gui
             import win32ui
@@ -409,15 +217,14 @@ class DesktopExcelScreenshotter:
             bitmap.CreateCompatibleBitmap(mfc_dc, width, height)
             save_dc.SelectObject(bitmap)
 
-            # Use PrintWindow for better capture (works with DWM)
+            # Use PrintWindow for better capture
             import ctypes
             result = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)
 
             if result == 0:
-                # Fallback to BitBlt
                 save_dc.BitBlt((0, 0), (width, height), mfc_dc, (0, 0), win32con.SRCCOPY)
 
-            # Convert to PIL Image
+            # Convert to PIL Image and save
             bmpinfo = bitmap.GetInfo()
             bmpstr = bitmap.GetBitmapBits(True)
             img = Image.frombuffer(
@@ -425,8 +232,6 @@ class DesktopExcelScreenshotter:
                 (bmpinfo['bmWidth'], bmpinfo['bmHeight']),
                 bmpstr, 'raw', 'BGRX', 0, 1
             )
-
-            # Save
             img.save(str(output_path))
 
             # Cleanup
@@ -438,20 +243,10 @@ class DesktopExcelScreenshotter:
             return output_path.exists()
 
         except ImportError as e:
-            # Fallback to pyautogui if win32 modules not available
-            print(f"  win32 modules not available ({e}), trying pyautogui...", flush=True)
-            try:
-                import pyautogui
-                # Find Excel window and capture it
-                time.sleep(0.2)
-                screenshot = pyautogui.screenshot()
-                screenshot.save(str(output_path))
-                return True
-            except ImportError:
-                print("  Neither win32gui nor pyautogui available", flush=True)
-                return False
+            print(f"  Required Windows modules not available: {e}", flush=True)
+            return False
         except Exception as e:
-            print(f"  Windows screenshot failed: {e}", flush=True)
+            print(f"  Screenshot failed: {e}", flush=True)
             return False
 
     def _sanitize_filename(self, name: str) -> str:
@@ -470,7 +265,7 @@ def capture_desktop_screenshots(
     sheets: list[SheetInfo],
     output_dir: Path,
 ) -> list[ScreenshotInfo]:
-    """Convenience function to capture desktop Excel screenshots.
+    """Convenience function to capture desktop Excel screenshots (Windows only).
 
     Args:
         file_path: Path to the Excel file
