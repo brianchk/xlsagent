@@ -1,6 +1,6 @@
 # Excel Workbook Analyzer
 
-Comprehensively analyze Excel workbooks by combining technical extraction with AI-powered insights.
+Comprehensively analyze Excel workbooks by combining factual extraction (via `xls-extract`) with AI-powered insights.
 
 ## Usage
 
@@ -13,134 +13,175 @@ With custom output directory:
 /analyze-excel /path/to/workbook.xlsx -o ./my-output
 ```
 
-Skip screenshots (or required on macOS):
+Skip screenshots (required on macOS):
 ```
 /analyze-excel /path/to/workbook.xlsx --no-screenshots
 ```
 
 ## How This Skill Works
 
-This skill combines **deterministic technical extraction** with **AI-powered analysis**:
+This skill has two distinct phases:
 
-### Step 1: Technical Extraction (Python CLI)
-Run the extraction tool to get raw technical data:
+### Phase 1: Factual Extraction (Python/xls-extract)
+
+The `xls-extract` library handles all deterministic extraction:
+- Sheets, formulas, named ranges
+- VBA macros, Power Query M code
+- Charts, pivot tables, tables
+- Conditional formatting, data validation
+- Screenshots (Windows only)
+- HTML report and Markdown documentation
+
+Run the extraction:
 ```bash
 cd ~/.claude/skills/excel-analyzer
 source .venv/bin/activate  # .venv\Scripts\activate on Windows
 python -m src.main "<file_path>" -o "<output_dir>"
 ```
 
-### Step 2: AI Analysis (Claude)
-After extraction completes, read and analyze the generated files:
+### Phase 2: AI Analysis (Claude)
 
-1. **Read the summary**: `<output_dir>/summary.md`
-2. **Read sheet details**: `<output_dir>/sheets/*.md`
-3. **Read VBA code** (if present): `<output_dir>/vba/*.md`
-4. **Read formulas**: `<output_dir>/formulas/*.md`
-5. **View screenshots** (if available): `<output_dir>/screenshots/*.png`
+After extraction, Claude reads the generated files and provides insights that require understanding and interpretation:
 
-### Step 3: Generate AI Insights
-Based on the technical extracts, provide:
+1. **Read the generated files**:
+   - `<output_dir>/summary.md` - Start here
+   - `<output_dir>/sheets/*.md` - Sheet details
+   - `<output_dir>/screenshots/*.png` - Visual layout
+   - `<output_dir>/vba/*.md` - VBA code (if present)
+   - `<output_dir>/formulas/*.md` - Formula analysis
 
-#### 1. Workbook Purpose
-- What is the overall business purpose of this workbook?
+2. **Provide AI-powered analysis**:
+
+#### Workbook Purpose & Context
+- What is the business purpose?
 - Who are the likely users?
 - What decisions does it support?
 
-#### 2. Sheet-by-Sheet Analysis
-Focus on **main analytical sheets** (skip supporting data sheets like `pbi-*`, `ref-*`, `config-*` unless relevant).
+#### Sheet-by-Sheet Analysis
+For main sheets (skip `pbi-*`, `ref-*`, `config-*` data sheets):
+- **Purpose**: What business question does it answer?
+- **Key Inputs**: Dropdowns, filters, parameters users can change
+- **Data Layout**: What rows/columns represent
+- **Key Outputs**: Important calculations and summaries
+- **Visualizations**: What charts show and why
 
-For each main sheet, analyze:
-- **Purpose**: What business question does this sheet answer?
-- **Key Inputs/Filters**: What can users configure? (dropdowns, date ranges, parameters)
-- **Data Dimensions**: How is data organized? (rows = products, columns = months, etc.)
-- **Output Sections**: What are the key output areas and their purposes?
-- **Visualizations**: What charts/graphs are present and what do they show?
+#### Architecture & Data Flow
+- How sheets connect to each other
+- Data flow diagram (inputs → calculations → outputs)
+- Dependencies between components
 
-#### 3. Architecture & Data Flow
-- How do sheets connect to each other?
-- What is the data flow (inputs → calculations → outputs)?
-- Draw a simple ASCII diagram if helpful
+#### Complexity Analysis
+- Most complex formulas explained in plain English
+- Clever techniques worth noting
+- Areas that would be hard to maintain
 
-#### 4. Complexity Analysis
-- What are the most complex formulas or logic?
-- Are there any impressive or clever techniques?
-- What would be hard to understand or maintain?
+#### Issues & Risks
+- Error cells explained with fix suggestions
+- External reference risks
+- Security concerns (macros, external links)
+- Data quality issues
 
-#### 5. Issues & Risks
-- Are there any errors (#REF!, #NAME?, etc.)?
-- Potential bugs or fragile logic?
-- Security concerns (external links, macros)?
-- Data quality issues?
+#### VBA Analysis (if present)
+- What each macro does
+- Security assessment
+- Whether macros are essential
 
-#### 6. Recommendations
-- What could be improved?
-- What should users be careful about?
-- Migration considerations (if moving to a web app)
+#### Recommendations
+- Improvements and modernization suggestions
+- User warnings and gotchas
+- Migration considerations
 
 ## Output Structure
 
-The Python tool creates:
+The extraction creates:
 ```
 <output_dir>/
-├── report.html          # Interactive HTML report
-├── README.md            # Entry point
-├── summary.md           # Quick facts (read this first)
-├── sheets/              # Per-sheet technical details
+├── index.html           # Interactive HTML report
+├── README.md            # Entry point for Claude
+├── summary.md           # Quick facts
+├── sheets/              # Per-sheet details
 │   ├── _index.md
-│   └── <sheet-name>.md
+│   └── <sheet>.md
 ├── formulas/            # Formula analysis
-├── vba/                 # VBA module code (if .xlsm)
+├── vba/                 # VBA code (if .xlsm)
 ├── power_query/         # M code (if present)
-├── features/            # Conditional formatting, validations, etc.
-├── issues/              # Errors and broken references
-├── screenshots/         # Visual captures (Windows only)
-└── artifacts/           # Raw extracted files
+├── features/            # CF, validations, etc.
+├── issues/              # Errors, external refs
+├── screenshots/         # Visual captures
+│   ├── <sheet>_full.png
+│   └── <sheet>_detail.png
+└── workbook/            # Workbook-wide items
+    ├── vba.html
+    └── connections.html
 ```
 
-## Example Workflow
+## Example Session
 
 When user runs `/analyze-excel /path/to/budget.xlsx`:
 
-1. **Run extraction**:
-   ```bash
-   cd ~/.claude/skills/excel-analyzer && source .venv/bin/activate
-   python -m src.main "/path/to/budget.xlsx" -o "/path/to/budget_analysis"
-   ```
+**Step 1** - Run extraction:
+```bash
+cd ~/.claude/skills/excel-analyzer && source .venv/bin/activate
+python -m src.main "/path/to/budget.xlsx" -o "/path/to/budget_analysis"
+```
 
-2. **Read key files**:
-   - Read `summary.md` for overview
-   - Read each `sheets/*.md` for details
-   - View screenshots to understand layout
+**Step 2** - Claude reads and analyzes:
+```
+Reading summary.md...
+Reading sheets/Input.md, sheets/Calculations.md, sheets/Summary.md...
+Viewing screenshots...
+```
 
-3. **Provide analysis** covering:
-   - "This workbook is a departmental budget tracker that..."
-   - "The 'Input' sheet collects monthly actuals, which flow to..."
-   - "Data flows: Input → Calculations → Summary → Charts"
-   - "The SUMIFS formula on row 45 is complex because..."
-   - "Risk: External link to `\\server\data.xlsx` may break if..."
-   - "Recommendation: The manual copy-paste step could be automated..."
+**Step 3** - Claude provides insights:
+> "This workbook is a departmental budget tracker used by finance teams to monitor monthly spending against plan.
+>
+> **Key sheets:**
+> - **Input**: Where users enter monthly actuals via data validation dropdowns
+> - **Calculations**: SUMIFS formulas aggregate by department and category
+> - **Summary**: Executive dashboard with YTD variance analysis
+>
+> **Data flow:**
+> ```
+> [Input] → [Calculations] → [Summary] → [Charts]
+>            ↑
+>       [ref-budget]
+> ```
+>
+> **Complex formula on Calculations!E15:**
+> This SUMIFS with multiple criteria calculates YTD spend by department...
+>
+> **Issues found:**
+> - 3 #REF! errors in row 45 - likely caused by deleted rows
+> - External link to `\\server\data.xlsx` may break if moved
+>
+> **Recommendations:**
+> - Replace VLOOKUP formulas with XLOOKUP for better maintainability
+> - The manual copy-paste step could be automated with Power Query"
 
 ## Requirements
 
 - Python 3.11+
-- Virtual environment set up (run `setup-windows.bat` on Windows)
-- **Screenshots**: Windows only (macOS not supported due to Excel automation limitations)
+- `xls-extract` library (installed automatically)
+- **Screenshots**: Windows only with Desktop Excel
 
-## First Run
+## Setup
 
-If the virtual environment doesn't exist:
+First-time setup:
 ```bash
 cd ~/.claude/skills/excel-analyzer
 python -m venv .venv
 source .venv/bin/activate  # .venv\Scripts\activate on Windows
-pip install -e ".[dev]"
-pip install pywin32 pillow  # Windows only, for screenshots
+pip install -e .
+```
+
+For screenshots on Windows:
+```bash
+pip install "xls-extract[screenshots]"
 ```
 
 ## Limitations
 
-- **Screenshots (macOS)**: Not supported. Use `--no-screenshots` flag.
-- **DAX/Power Pivot**: Can detect but not fully extract (proprietary format).
-- **Very Hidden Sheets**: Documented but not screenshotted.
-- **ActiveX Controls**: Limited extraction.
+- **Screenshots**: Windows only (macOS not supported)
+- **DAX/Power Pivot**: Can detect but not fully extract
+- **Very Hidden Sheets**: Documented but not screenshotted
+- **ActiveX Controls**: Limited extraction
