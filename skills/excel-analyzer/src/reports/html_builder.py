@@ -463,38 +463,36 @@ class HTMLReportBuilder:
 
     def _build_screenshot_section(self, screenshots) -> str:
         """Build screenshots section for a sheet."""
-        import re
-
         views = {}
-        birdseye_zoom = None
         for s in screenshots:
             filename = s.path.name
-            if "_100." in filename:
-                views["normal"] = filename
+            if "_full." in filename:
+                views["full"] = filename
+            elif "_detail." in filename:
+                views["detail"] = filename
+            elif "_100." in filename:
+                # Legacy format support
+                views["detail"] = filename
             else:
-                # Any other zoom level is bird's eye
-                views["birdseye"] = filename
-                # Extract zoom level from filename (e.g., "sheet_25.png" -> 25)
-                match = re.search(r'_(\d+)\.png$', filename)
-                if match:
-                    birdseye_zoom = match.group(1)
+                views["full"] = filename
 
         imgs = ""
-        if views.get("normal"):
+        # Show full view first (all content)
+        if views.get("full"):
             imgs += f'''
             <div class="screenshot-view">
-                <span class="zoom-label">100% (Normal)</span>
-                <a href="../screenshots/{views["normal"]}" target="_blank">
-                    <img src="../screenshots/{views["normal"]}" alt="Normal View" loading="lazy" />
+                <span class="zoom-label">Full Sheet</span>
+                <a href="../screenshots/{views["full"]}" target="_blank">
+                    <img src="../screenshots/{views["full"]}" alt="Full Sheet" loading="lazy" />
                 </a>
             </div>'''
-        if views.get("birdseye"):
-            zoom_label = f"{birdseye_zoom}% (Fit All)" if birdseye_zoom else "Bird's Eye"
+        # Show detail view (first ~50 rows at readable size)
+        if views.get("detail"):
             imgs += f'''
             <div class="screenshot-view">
-                <span class="zoom-label">{zoom_label}</span>
-                <a href="../screenshots/{views["birdseye"]}" target="_blank">
-                    <img src="../screenshots/{views["birdseye"]}" alt="Bird's Eye View" loading="lazy" />
+                <span class="zoom-label">Detail (Top Rows)</span>
+                <a href="../screenshots/{views["detail"]}" target="_blank">
+                    <img src="../screenshots/{views["detail"]}" alt="Detail View" loading="lazy" />
                 </a>
             </div>'''
 

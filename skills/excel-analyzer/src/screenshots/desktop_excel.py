@@ -126,7 +126,7 @@ class DesktopExcelScreenshotter:
             print(f"  Could not set window size: {e}", flush=True)
 
     def _capture_sheet(self, wb, sheet_info: SheetInfo) -> list[ScreenshotInfo]:
-        """Capture screenshots of a single sheet (normal + bird's eye view)."""
+        """Capture screenshots of a single sheet using Range.CopyPicture."""
         screenshots = []
         try:
             print(f"  Capturing: {sheet_info.name}", flush=True)
@@ -134,60 +134,69 @@ class DesktopExcelScreenshotter:
             # Activate the sheet
             sheet = wb.sheets[sheet_info.name]
             sheet.activate()
-
-            # Hide UI elements to maximize sheet area
-            app = sheet.book.app
-            ui_state = self._hide_excel_ui(app)
-
-            # Scroll to top-left
-            sheet.range("A1").select()
-            time.sleep(0.3)
-
-            # Screenshot 1: Normal view (100% zoom)
-            self._set_zoom(sheet, self.ZOOM_NORMAL)
             time.sleep(0.2)
 
-            normal_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_{self.ZOOM_NORMAL}.png"
-            if self._take_screenshot(normal_path, sheet):
+            # Capture 1: Full sheet (entire used range)
+            full_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_full.png"
+            if self._capture_range_as_image(sheet, full_path, max_rows=None):
                 screenshots.append(ScreenshotInfo(
                     sheet=sheet_info.name,
-                    path=normal_path,
+                    path=full_path,
                     captured_at=datetime.now().isoformat(),
                 ))
 
-            # Screenshot 2: Bird's eye view - zoom out until content fits
-            birdseye_zoom = self._calculate_fit_zoom(sheet, sheet_info)
-            # Always capture bird's eye if zoom would be different from normal
-            if birdseye_zoom < self.ZOOM_NORMAL:
-                self._set_zoom(sheet, birdseye_zoom)
-                time.sleep(0.3)
-
-                birdseye_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_{birdseye_zoom}.png"
-                success = self._take_screenshot(birdseye_path, sheet)
-                if success:
-                    screenshots.append(ScreenshotInfo(
-                        sheet=sheet_info.name,
-                        path=birdseye_path,
-                        captured_at=datetime.now().isoformat(),
-                    ))
-                else:
-                    print(f"      Bird's eye capture failed for {sheet_info.name}", flush=True)
-
-            # Reset zoom
-            self._set_zoom(sheet, self.ZOOM_NORMAL)
-
-            # Restore UI elements
-            self._restore_excel_ui(app, ui_state)
+            # Capture 2: Detail view (first ~50 rows for readability)
+            detail_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_detail.png"
+            if self._capture_range_as_image(sheet, detail_path, max_rows=50):
+                screenshots.append(ScreenshotInfo(
+                    sheet=sheet_info.name,
+                    path=detail_path,
+                    captured_at=datetime.now().isoformat(),
+                ))
 
         except Exception as e:
             print(f"  Error capturing sheet '{sheet_info.name}': {e}", flush=True)
-            # Try to restore UI even on error
-            try:
-                self._restore_excel_ui(app, ui_state)
-            except Exception:
-                pass
 
         return screenshots
+
+    def _capture_range_as_image(self, sheet, output_path: Path, max_rows: int | None = None) -> bool:
+        """Capture a range as an image using CopyPicture (no window chrome)."""
+        try:
+            from PIL import ImageGrab
+
+            # Get used range
+            used_range = sheet.api.UsedRange
+            total_rows = used_range.Rows.Count
+            total_cols = used_range.Columns.Count
+
+            if max_rows and total_rows > max_rows:
+                # Limit to first N rows of the used range
+                # UsedRange.Cells(row, col) is relative to the used range (1-indexed)
+                capture_range = used_range.Resize(max_rows, total_cols)
+                label = f"detail ({max_rows} rows)"
+            else:
+                capture_range = used_range
+                label = f"full ({total_rows} rows x {total_cols} cols)"
+
+            print(f"    Capturing {label}...", flush=True)
+
+            # Copy range as picture to clipboard
+            # xlScreen = 1, xlBitmap = 2
+            capture_range.CopyPicture(Appearance=1, Format=2)
+            time.sleep(0.3)
+
+            # Grab from clipboard
+            img = ImageGrab.grabclipboard()
+            if img:
+                img.save(str(output_path), "PNG")
+                return output_path.exists()
+            else:
+                print(f"    Could not grab image from clipboard", flush=True)
+                return False
+
+        except Exception as e:
+            print(f"    Range capture failed: {e}", flush=True)
+            return False
 
     def _hide_excel_ui(self, app) -> dict:
         """Hide Excel UI elements to maximize sheet area. Returns previous state."""
