@@ -125,6 +125,9 @@ class DesktopExcelScreenshotter:
         except Exception as e:
             print(f"  Could not set window size: {e}", flush=True)
 
+    # Approximate visible area at 100% zoom (rows x cols)
+    DETAIL_VIEW_SIZE = (40, 20)
+
     def _capture_sheet(self, wb, sheet_info: SheetInfo) -> list[ScreenshotInfo]:
         """Capture screenshots of a single sheet using Range.CopyPicture."""
         screenshots = []
@@ -136,18 +139,18 @@ class DesktopExcelScreenshotter:
             sheet.activate()
             time.sleep(0.2)
 
-            # Capture 1: Full sheet (entire used range)
+            # Capture 1: Full sheet (all actual data, not just UsedRange)
             full_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_full.png"
-            if self._capture_range_as_image(sheet, full_path, max_rows=None):
+            if self._capture_range_as_image(sheet, full_path, fixed_size=None):
                 screenshots.append(ScreenshotInfo(
                     sheet=sheet_info.name,
                     path=full_path,
                     captured_at=datetime.now().isoformat(),
                 ))
 
-            # Capture 2: Detail view (first ~50 rows for readability)
+            # Capture 2: Detail view (fixed size from A1, like 100% zoom view)
             detail_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_detail.png"
-            if self._capture_range_as_image(sheet, detail_path, max_rows=50):
+            if self._capture_range_as_image(sheet, detail_path, fixed_size=self.DETAIL_VIEW_SIZE):
                 screenshots.append(ScreenshotInfo(
                     sheet=sheet_info.name,
                     path=detail_path,
@@ -159,24 +162,66 @@ class DesktopExcelScreenshotter:
 
         return screenshots
 
-    def _capture_range_as_image(self, sheet, output_path: Path, max_rows: int | None = None) -> bool:
-        """Capture a range as an image using CopyPicture (no window chrome)."""
+    def _get_actual_data_range(self, sheet) -> tuple[int, int]:
+        """Find the actual last row and column with data (not just formatting)."""
+        try:
+            ws = sheet.api
+
+            # Find last row with data
+            last_row = 1
+            try:
+                # Search from bottom up for any value
+                found = ws.Cells.Find(
+                    What="*",
+                    SearchOrder=-4134,  # xlByRows
+                    SearchDirection=2,  # xlPrevious
+                )
+                if found:
+                    last_row = found.Row
+            except Exception:
+                last_row = ws.UsedRange.Rows.Count
+
+            # Find last column with data
+            last_col = 1
+            try:
+                # Search from right to left for any value
+                found = ws.Cells.Find(
+                    What="*",
+                    SearchOrder=-4152,  # xlByColumns
+                    SearchDirection=2,  # xlPrevious
+                )
+                if found:
+                    last_col = found.Column
+            except Exception:
+                last_col = ws.UsedRange.Columns.Count
+
+            return last_row, last_col
+        except Exception:
+            return 100, 20  # Fallback
+
+    def _capture_range_as_image(self, sheet, output_path: Path, fixed_size: tuple[int, int] | None = None) -> bool:
+        """Capture a range as an image using CopyPicture (no window chrome).
+
+        Args:
+            sheet: The sheet to capture
+            output_path: Where to save the image
+            fixed_size: If provided, capture fixed (rows, cols) from A1. Otherwise capture all data.
+        """
         try:
             from PIL import ImageGrab
 
-            # Get used range
-            used_range = sheet.api.UsedRange
-            total_rows = used_range.Rows.Count
-            total_cols = used_range.Columns.Count
+            ws = sheet.api
 
-            if max_rows and total_rows > max_rows:
-                # Limit to first N rows of the used range
-                # UsedRange.Cells(row, col) is relative to the used range (1-indexed)
-                capture_range = used_range.Resize(max_rows, total_cols)
-                label = f"detail ({max_rows} rows)"
+            if fixed_size:
+                # Fixed size capture from A1 (detail view)
+                rows, cols = fixed_size
+                capture_range = ws.Range(ws.Cells(1, 1), ws.Cells(rows, cols))
+                label = f"detail ({rows} rows x {cols} cols)"
             else:
-                capture_range = used_range
-                label = f"full ({total_rows} rows x {total_cols} cols)"
+                # Find actual data extent (not just UsedRange which includes formatting)
+                last_row, last_col = self._get_actual_data_range(sheet)
+                capture_range = ws.Range(ws.Cells(1, 1), ws.Cells(last_row, last_col))
+                label = f"full ({last_row} rows x {last_col} cols)"
 
             print(f"    Capturing {label}...", flush=True)
 
