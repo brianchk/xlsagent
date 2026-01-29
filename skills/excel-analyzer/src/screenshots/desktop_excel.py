@@ -314,17 +314,34 @@ class DesktopExcelScreenshotter:
                     excel_sheet = sheet.api
                     chart_objects = excel_sheet.ChartObjects()
 
+                    if chart_objects.Count == 0:
+                        continue
+
                     for i in range(1, chart_objects.Count + 1):  # Excel is 1-indexed
                         try:
                             chart_obj = chart_objects.Item(i)
-                            chart = chart_obj.Chart
                             chart_name = chart_obj.Name or f"Chart_{i}"
 
                             safe_name = self._sanitize_filename(f"{sheet.name}_{chart_name}")
+                            # Use absolute path with forward slashes for Windows COM
                             output_path = chart_dir / f"{safe_name}.png"
+                            output_path_str = str(output_path.resolve())
 
-                            # Export chart as image
-                            chart.Export(str(output_path), "PNG")
+                            # Try CopyPicture + paste to new chart sheet + export
+                            # This is more reliable than direct Export
+                            try:
+                                chart_obj.CopyPicture(1, 2)  # xlScreen=1, xlPicture=2
+                                time.sleep(0.1)
+
+                                # Save via PIL from clipboard
+                                from PIL import ImageGrab
+                                img = ImageGrab.grabclipboard()
+                                if img:
+                                    img.save(output_path_str, "PNG")
+                            except Exception:
+                                # Fallback: try direct export
+                                chart = chart_obj.Chart
+                                chart.Export(output_path_str, "PNG")
 
                             if output_path.exists():
                                 print(f"    Chart: {chart_name} ({sheet.name})", flush=True)
@@ -334,8 +351,8 @@ class DesktopExcelScreenshotter:
                                     captured_at=datetime.now().isoformat(),
                                 ))
                         except Exception as e:
-                            print(f"    Could not export chart {i}: {e}", flush=True)
-                except Exception as e:
+                            print(f"    Could not export chart {i} on {sheet.name}: {e}", flush=True)
+                except Exception:
                     # Sheet might not have charts or API access failed
                     continue
 
