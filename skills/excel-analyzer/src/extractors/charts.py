@@ -72,27 +72,11 @@ class ChartExtractor(BaseExtractor):
             chart_class_name = chart.__class__.__name__
             chart_type = self.CHART_TYPE_NAMES.get(chart_class_name, chart_class_name)
 
-            # Get chart title
-            title = None
-            try:
-                if chart.title:
-                    if hasattr(chart.title, "text"):
-                        title = chart.title.text
-                    elif isinstance(chart.title, str):
-                        title = chart.title
-            except Exception:
-                pass
+            # Get chart title - handle openpyxl's complex title structure
+            title = self._extract_title(chart)
 
-            # Get data range (from first series if available)
-            data_range = None
-            try:
-                if chart.series and len(chart.series) > 0:
-                    first_series = chart.series[0]
-                    if hasattr(first_series, "val") and first_series.val:
-                        if hasattr(first_series.val, "numRef") and first_series.val.numRef:
-                            data_range = first_series.val.numRef.f
-            except Exception:
-                pass
+            # Get data ranges from all series
+            data_range = self._extract_data_ranges(chart)
 
             # Get position
             position = None
@@ -113,5 +97,75 @@ class ChartExtractor(BaseExtractor):
                 data_range=data_range,
                 position=position,
             )
+        except Exception:
+            return None
+
+    def _extract_title(self, chart) -> str | None:
+        """Extract the actual text from a chart title."""
+        try:
+            if not chart.title:
+                return None
+
+            title_obj = chart.title
+
+            # Direct string
+            if isinstance(title_obj, str):
+                return title_obj
+
+            # Try to get text from RichText structure
+            if hasattr(title_obj, 'tx') and title_obj.tx:
+                tx = title_obj.tx
+                if hasattr(tx, 'rich') and tx.rich:
+                    # Extract text from rich text paragraphs
+                    texts = []
+                    for p in tx.rich.p or []:
+                        for r in p.r or []:
+                            if hasattr(r, 't') and r.t:
+                                texts.append(r.t)
+                    if texts:
+                        return ''.join(texts)
+                if hasattr(tx, 'strRef') and tx.strRef:
+                    # Title references a cell
+                    if hasattr(tx.strRef, 'f') and tx.strRef.f:
+                        return f"={tx.strRef.f}"
+
+            # Try simple text attribute
+            if hasattr(title_obj, 'text') and title_obj.text:
+                text = title_obj.text
+                if isinstance(text, str):
+                    return text
+
+            return None
+        except Exception:
+            return None
+
+    def _extract_data_ranges(self, chart) -> str | None:
+        """Extract data ranges from chart series."""
+        try:
+            ranges = []
+            if chart.series:
+                for series in chart.series[:3]:  # Limit to first 3 series
+                    # Get values reference
+                    if hasattr(series, 'val') and series.val:
+                        val = series.val
+                        if hasattr(val, 'numRef') and val.numRef and val.numRef.f:
+                            ranges.append(val.numRef.f)
+
+                    # Get categories reference
+                    if hasattr(series, 'cat') and series.cat:
+                        cat = series.cat
+                        if hasattr(cat, 'numRef') and cat.numRef and cat.numRef.f:
+                            if cat.numRef.f not in ranges:
+                                ranges.append(f"(cat) {cat.numRef.f}")
+                        elif hasattr(cat, 'strRef') and cat.strRef and cat.strRef.f:
+                            if cat.strRef.f not in ranges:
+                                ranges.append(f"(cat) {cat.strRef.f}")
+
+            if ranges:
+                result = "; ".join(ranges)
+                if len(chart.series) > 3:
+                    result += f" ... (+{len(chart.series) - 3} more series)"
+                return result
+            return None
         except Exception:
             return None

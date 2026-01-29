@@ -106,6 +106,14 @@ def analyze_workbook(file_path: Path) -> WorkbookAnalysis:
     except Exception as e:
         analysis.errors.append(ExtractionError(extractor="connections", message=str(e)))
 
+    # DAX/Power Pivot detection (needs workbook for CUBE function scan)
+    print("  Detecting: DAX/Power Pivot...", flush=True)
+    try:
+        dax_detector = DAXDetector(wb, file_path)
+        analysis.has_dax, analysis.dax_detection_note = dax_detector.extract()
+    except Exception as e:
+        analysis.errors.append(ExtractionError(extractor="dax", message=str(e)))
+
     wb.close()
 
     # VBA extraction (reads directly from file, no openpyxl workbook needed)
@@ -133,14 +141,6 @@ def analyze_workbook(file_path: Path) -> WorkbookAnalysis:
         analysis.form_controls = ctrl_extractor.extract()
     except Exception as e:
         analysis.errors.append(ExtractionError(extractor="controls", message=str(e)))
-
-    # DAX/Power Pivot detection
-    print("  Detecting: DAX/Power Pivot...", flush=True)
-    try:
-        dax_detector = DAXDetector(None, file_path)
-        analysis.has_dax, analysis.dax_detection_note = dax_detector.extract()
-    except Exception as e:
-        analysis.errors.append(ExtractionError(extractor="dax", message=str(e)))
 
     # Extract external references from formulas
     analysis.external_refs = list({

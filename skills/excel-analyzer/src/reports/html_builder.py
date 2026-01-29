@@ -48,6 +48,9 @@ class HTMLReportBuilder:
         # Generate sections
         summary_section = self._generate_summary_section()
         sheets_section = self._generate_sheets_section()
+        charts_section = self._generate_charts_section() if a.charts else ""
+        pivot_tables_section = self._generate_pivot_tables_section() if a.pivot_tables else ""
+        tables_section = self._generate_tables_section() if a.tables else ""
         formulas_section = self._generate_formulas_section()
         features_section = self._generate_features_section()
         vba_section = self._generate_vba_section() if a.vba_modules else ""
@@ -69,6 +72,9 @@ class HTMLReportBuilder:
         <ul>
             <li><a href="#summary">Summary</a></li>
             <li><a href="#sheets">Sheets ({len(a.sheets)})</a></li>
+            {"<li><a href='#charts'>Charts (" + str(len(a.charts)) + ")</a></li>" if a.charts else ""}
+            {"<li><a href='#pivot-tables'>Pivot Tables (" + str(len(a.pivot_tables)) + ")</a></li>" if a.pivot_tables else ""}
+            {"<li><a href='#tables'>Tables (" + str(len(a.tables)) + ")</a></li>" if a.tables else ""}
             <li><a href="#formulas">Formulas ({len(a.formulas)})</a></li>
             <li><a href="#features">Features</a></li>
             {"<li><a href='#vba'>VBA (" + str(len(a.vba_modules)) + ")</a></li>" if a.vba_modules else ""}
@@ -90,6 +96,9 @@ class HTMLReportBuilder:
 
         {summary_section}
         {sheets_section}
+        {charts_section}
+        {pivot_tables_section}
+        {tables_section}
         {formulas_section}
         {features_section}
         {vba_section}
@@ -662,6 +671,135 @@ class HTMLReportBuilder:
         </section>
         """
 
+    def _generate_charts_section(self) -> str:
+        """Generate the charts section with human-friendly display."""
+        if not self.analysis.charts:
+            return ""
+
+        chart_cards = ""
+        for c in self.analysis.charts:
+            # Build chart card with relevant info
+            title_html = f"<p><strong>Title:</strong> {self._escape(c.title)}</p>" if c.title else ""
+            data_html = f"<p><strong>Data:</strong> <code>{self._escape(c.data_range)}</code></p>" if c.data_range else ""
+            position_html = f"<p><strong>Position:</strong> {self._escape(c.position)}</p>" if c.position else ""
+
+            chart_cards += f"""
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span class="chart-type-badge">{self._escape(c.chart_type)}</span>
+                    <h4>{self._escape(c.name)}</h4>
+                </div>
+                <div class="chart-details">
+                    <p><strong>Sheet:</strong> {self._escape(c.sheet)}</p>
+                    {title_html}
+                    {data_html}
+                    {position_html}
+                </div>
+            </div>
+            """
+
+        return f"""
+        <section id="charts" class="section">
+            <h2>Charts ({len(self.analysis.charts)})</h2>
+            <p class="section-note">Visualizations embedded in the workbook. Chart type, data source, and location are shown for each.</p>
+            <div class="chart-grid">
+                {chart_cards}
+            </div>
+        </section>
+        """
+
+    def _generate_pivot_tables_section(self) -> str:
+        """Generate the pivot tables section."""
+        if not self.analysis.pivot_tables:
+            return ""
+
+        pivot_cards = ""
+        for p in self.analysis.pivot_tables:
+            # Build field lists
+            rows_html = f"<p><strong>Row Fields:</strong> {', '.join(self._escape(f) for f in p.row_fields)}</p>" if p.row_fields else ""
+            cols_html = f"<p><strong>Column Fields:</strong> {', '.join(self._escape(f) for f in p.column_fields)}</p>" if p.column_fields else ""
+            data_html = f"<p><strong>Value Fields:</strong> {', '.join(self._escape(f) for f in p.data_fields)}</p>" if p.data_fields else ""
+            filter_html = f"<p><strong>Filter Fields:</strong> {', '.join(self._escape(f) for f in p.filter_fields)}</p>" if p.filter_fields else ""
+            source_html = f"<p><strong>Source:</strong> <code>{self._escape(p.source_range)}</code></p>" if p.source_range else ""
+
+            pivot_cards += f"""
+            <div class="pivot-card">
+                <div class="pivot-header">
+                    <h4>{self._escape(p.name)}</h4>
+                    <span class="location-badge">{self._escape(p.sheet)} @ {self._escape(p.location)}</span>
+                </div>
+                <div class="pivot-details">
+                    {source_html}
+                    {rows_html}
+                    {cols_html}
+                    {data_html}
+                    {filter_html}
+                </div>
+            </div>
+            """
+
+        return f"""
+        <section id="pivot-tables" class="section">
+            <h2>Pivot Tables ({len(self.analysis.pivot_tables)})</h2>
+            <p class="section-note">Interactive data summaries. Shows source data range and field configuration for each pivot table.</p>
+            <div class="pivot-grid">
+                {pivot_cards}
+            </div>
+        </section>
+        """
+
+    def _generate_tables_section(self) -> str:
+        """Generate the tables (ListObjects) section."""
+        if not self.analysis.tables:
+            return ""
+
+        table_cards = ""
+        for t in self.analysis.tables:
+            # Build column list (show first 8, then count remaining)
+            if len(t.columns) <= 8:
+                cols_display = ", ".join(self._escape(c) for c in t.columns)
+            else:
+                cols_display = ", ".join(self._escape(c) for c in t.columns[:8]) + f" (+{len(t.columns) - 8} more)"
+
+            # Calculate row count if available
+            row_info = ""
+            if t.range:
+                # Extract row count from range like A1:D100
+                try:
+                    parts = t.range.split(":")
+                    if len(parts) == 2:
+                        import re
+                        start_row = int(re.search(r'\d+', parts[0]).group())
+                        end_row = int(re.search(r'\d+', parts[1]).group())
+                        data_rows = end_row - start_row  # Subtract 1 for header
+                        row_info = f"<p><strong>Data Rows:</strong> ~{data_rows}</p>"
+                except Exception:
+                    pass
+
+            table_cards += f"""
+            <div class="table-card">
+                <div class="table-header">
+                    <h4>{self._escape(t.display_name)}</h4>
+                    <span class="location-badge">{self._escape(t.sheet)}</span>
+                </div>
+                <div class="table-details">
+                    <p><strong>Range:</strong> <code>{self._escape(t.range)}</code></p>
+                    {row_info}
+                    <p><strong>Columns ({len(t.columns)}):</strong> {cols_display}</p>
+                </div>
+            </div>
+            """
+
+        return f"""
+        <section id="tables" class="section">
+            <h2>Structured Tables ({len(self.analysis.tables)})</h2>
+            <p class="section-note">Named tables (ListObjects) that support structured references in formulas.</p>
+            <div class="table-grid">
+                {table_cards}
+            </div>
+        </section>
+        """
+
     def _generate_screenshots_section(self) -> str:
         """Generate the screenshots section with both zoom levels per sheet."""
         if not self.analysis.screenshots:
@@ -1152,6 +1290,136 @@ class HTMLReportBuilder:
             color: var(--text-muted);
             font-size: 0.9rem;
             margin-bottom: 1rem;
+        }
+
+        /* Charts section */
+        .chart-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1rem;
+        }
+
+        .chart-card {
+            background: var(--bg);
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+
+        .chart-header {
+            padding: 0.75rem 1rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .chart-header h4 {
+            margin: 0;
+            font-size: 1rem;
+        }
+
+        .chart-type-badge {
+            background: rgba(255,255,255,0.2);
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            white-space: nowrap;
+        }
+
+        .chart-details {
+            padding: 1rem;
+        }
+
+        .chart-details p {
+            margin: 0.25rem 0;
+            font-size: 0.9rem;
+        }
+
+        /* Pivot Tables section */
+        .pivot-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 1rem;
+        }
+
+        .pivot-card {
+            background: var(--bg);
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+
+        .pivot-header {
+            padding: 0.75rem 1rem;
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .pivot-header h4 {
+            margin: 0;
+            font-size: 1rem;
+        }
+
+        .location-badge {
+            background: rgba(255,255,255,0.2);
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+        }
+
+        .pivot-details {
+            padding: 1rem;
+        }
+
+        .pivot-details p {
+            margin: 0.25rem 0;
+            font-size: 0.9rem;
+        }
+
+        /* Structured Tables section */
+        .table-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 1rem;
+        }
+
+        .table-card {
+            background: var(--bg);
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+
+        .table-header {
+            padding: 0.75rem 1rem;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .table-header h4 {
+            margin: 0;
+            font-size: 1rem;
+        }
+
+        .table-details {
+            padding: 1rem;
+        }
+
+        .table-details p {
+            margin: 0.25rem 0;
+            font-size: 0.9rem;
         }
 
         @media (max-width: 1200px) {
