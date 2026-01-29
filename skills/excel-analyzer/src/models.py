@@ -321,6 +321,8 @@ class ScreenshotInfo:
     width: int = 0
     height: int = 0
     captured_at: str | None = None
+    is_chart: bool = False
+    chart_name: str | None = None
 
 
 @dataclass

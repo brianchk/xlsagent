@@ -38,6 +38,9 @@ class HTMLReportBuilder:
         # Build cross-reference maps
         self._build_cross_references()
 
+        # Build chart screenshot lookup
+        self._build_chart_screenshot_map()
+
     def _build_cross_references(self):
         """Build maps of what each sheet contains and what references what."""
         a = self.analysis
@@ -113,6 +116,18 @@ class HTMLReportBuilder:
             # Remove quotes if present
             return sheet_part.strip("'\"")
         return default_sheet
+
+    def _build_chart_screenshot_map(self):
+        """Build a map of chart screenshots by sheet."""
+        # Map: sheet_name -> list of chart screenshot paths
+        self.chart_screenshots_by_sheet = defaultdict(list)
+
+        for ss in self.analysis.screenshots:
+            if ss.is_chart and ss.chart_name and ss.path.exists():
+                self.chart_screenshots_by_sheet[ss.sheet].append({
+                    'name': ss.chart_name,
+                    'path': ss.path,
+                })
 
     def build(self) -> Path:
         """Generate the complete multi-page HTML report."""
@@ -319,8 +334,8 @@ class HTMLReportBuilder:
         controls = self.sheet_controls.get(name, [])
         vba_refs = self.sheet_to_vba.get(name, set())
 
-        # Screenshots for this sheet
-        screenshots = [s for s in a.screenshots if s.sheet == name]
+        # Screenshots for this sheet (exclude chart screenshots)
+        screenshots = [s for s in a.screenshots if s.sheet == name and not s.is_chart]
 
         # Build sections
         sections = []
@@ -492,19 +507,37 @@ class HTMLReportBuilder:
     def _build_charts_section(self, charts, sheet_name: str = "") -> str:
         """Build charts section for a sheet."""
         cards = ""
-        for c in charts:
+
+        # Get chart screenshots for this sheet
+        sheet_chart_screenshots = self.chart_screenshots_by_sheet.get(sheet_name, [])
+
+        for idx, c in enumerate(charts):
             title_html = f"<p><strong>Title:</strong> {self._escape(c.title)}</p>" if c.title else ""
             data_html = f"<p><strong>Data:</strong> <code>{self._escape(c.data_range)}</code></p>" if c.data_range else ""
 
-            # Check for chart image
+            # Find matching chart screenshot
             chart_img = ""
-            if sheet_name:
-                # Look for chart image in screenshots/charts/
-                safe_sheet = self._sanitize_for_path(sheet_name)
-                safe_chart = self._sanitize_for_path(c.name)
-                img_path = self.output_dir / "screenshots" / "charts" / f"{safe_sheet}_{safe_chart}.png"
-                if img_path.exists():
-                    rel_path = f"../screenshots/charts/{safe_sheet}_{safe_chart}.png"
+            if sheet_name and sheet_chart_screenshots:
+                # Try to match by index (since chart names from openpyxl and COM API may differ)
+                # Also try fuzzy name matching as fallback
+                matched_screenshot = None
+
+                # First, try index-based matching
+                if idx < len(sheet_chart_screenshots):
+                    matched_screenshot = sheet_chart_screenshots[idx]
+
+                # Fallback: try to match by name similarity
+                if not matched_screenshot:
+                    chart_name_lower = c.name.lower().replace(" ", "").replace("_", "")
+                    for ss in sheet_chart_screenshots:
+                        ss_name_lower = ss['name'].lower().replace(" ", "").replace("_", "")
+                        if chart_name_lower in ss_name_lower or ss_name_lower in chart_name_lower:
+                            matched_screenshot = ss
+                            break
+
+                if matched_screenshot and matched_screenshot['path'].exists():
+                    # Build relative path from sheets/ to screenshots/charts/
+                    rel_path = f"../{matched_screenshot['path'].relative_to(self.output_dir)}"
                     chart_img = f'''
                     <div class="chart-image">
                         <a href="{rel_path}" target="_blank">

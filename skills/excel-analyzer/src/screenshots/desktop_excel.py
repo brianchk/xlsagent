@@ -19,7 +19,7 @@ class DesktopExcelScreenshotter:
 
     # Zoom levels
     ZOOM_NORMAL = 100
-    ZOOM_MIN = 25  # Minimum zoom for bird's eye view
+    ZOOM_MIN = 40  # Minimum zoom for bird's eye view (25% was too extreme)
 
     def __init__(self, output_dir: Path):
         """Initialize screenshotter.
@@ -157,18 +157,21 @@ class DesktopExcelScreenshotter:
 
             # Screenshot 2: Bird's eye view - zoom out until content fits
             birdseye_zoom = self._calculate_fit_zoom(sheet, sheet_info)
-            # Always capture bird's eye if different from normal (even if same due to small sheet)
-            if birdseye_zoom < self.ZOOM_NORMAL or sheet_info.row_count > 35 or sheet_info.col_count > 12:
+            # Always capture bird's eye if zoom would be different from normal
+            if birdseye_zoom < self.ZOOM_NORMAL:
                 self._set_zoom(sheet, birdseye_zoom)
                 time.sleep(0.3)
 
                 birdseye_path = self.output_dir / f"{self._sanitize_filename(sheet_info.name)}_{birdseye_zoom}.png"
-                if self._take_screenshot(birdseye_path, sheet):
+                success = self._take_screenshot(birdseye_path, sheet)
+                if success:
                     screenshots.append(ScreenshotInfo(
                         sheet=sheet_info.name,
                         path=birdseye_path,
                         captured_at=datetime.now().isoformat(),
                     ))
+                else:
+                    print(f"      Bird's eye capture failed for {sheet_info.name}", flush=True)
 
             # Reset zoom
             self._set_zoom(sheet, self.ZOOM_NORMAL)
@@ -196,21 +199,12 @@ class DesktopExcelScreenshotter:
             state['formula_bar'] = api.DisplayFormulaBar
             state['status_bar'] = api.DisplayStatusBar
 
-            # Hide formula bar and status bar
+            # Hide formula bar and status bar (these don't steal focus)
             api.DisplayFormulaBar = False
             api.DisplayStatusBar = False
 
-            # Minimize ribbon (collapse it)
-            try:
-                api.ExecuteExcel4Macro('SHOW.TOOLBAR("Ribbon",False)')
-            except Exception:
-                try:
-                    # Alternative: use CommandBars
-                    api.CommandBars.ExecuteMso("MinimizeRibbon")
-                except Exception:
-                    pass
-
-            time.sleep(0.2)  # Let UI update
+            # Skip ribbon manipulation - it causes focus stealing
+            # Users can manually minimize ribbon if they want more space
 
         except Exception as e:
             print(f"    Warning: Could not hide UI elements: {e}", flush=True)
@@ -227,15 +221,6 @@ class DesktopExcelScreenshotter:
                 api.DisplayFormulaBar = state['formula_bar']
             if 'status_bar' in state:
                 api.DisplayStatusBar = state['status_bar']
-
-            # Restore ribbon
-            try:
-                api.ExecuteExcel4Macro('SHOW.TOOLBAR("Ribbon",True)')
-            except Exception:
-                try:
-                    api.CommandBars.ExecuteMso("MinimizeRibbon")  # Toggle back
-                except Exception:
-                    pass
 
         except Exception as e:
             print(f"    Warning: Could not restore UI elements: {e}", flush=True)
@@ -414,6 +399,8 @@ class DesktopExcelScreenshotter:
                                     sheet=sheet.name,
                                     path=output_path,
                                     captured_at=datetime.now().isoformat(),
+                                    is_chart=True,
+                                    chart_name=chart_name,
                                 ))
                         except Exception as e:
                             print(f"    Could not export chart {i} on {sheet.name}: {e}", flush=True)
