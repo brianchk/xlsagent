@@ -300,7 +300,7 @@ def main() -> int:
         print_summary(analysis)
 
         print(f"Reports saved to: {output_dir}", flush=True)
-        print(f"  - HTML: {output_dir}/report.html", flush=True)
+        print(f"  - HTML: {output_dir}/index.html", flush=True)
         print(f"  - Markdown: {output_dir}/README.md", flush=True)
 
         return 0

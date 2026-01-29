@@ -1,210 +1,1027 @@
-"""Rich HTML report generator."""
+"""Rich HTML report generator - Sheet-centric multi-page layout."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from datetime import datetime
+from collections import defaultdict
 
-from jinja2 import Environment, BaseLoader
 from pygments import highlight
 from pygments.lexers import VbNetLexer, get_lexer_by_name
 from pygments.formatters import HtmlFormatter
 
-from ..models import FormulaCategory, SheetVisibility, WorkbookAnalysis
+from ..models import SheetVisibility, WorkbookAnalysis, SheetInfo
 
 
 class HTMLReportBuilder:
-    """Generates a rich, interactive HTML report."""
+    """Generates a multi-page HTML report centered around sheets."""
+
+    # Common prefixes to detect for grouping
+    GROUP_PREFIXES = [
+        ("pbi-", "Power BI Data"),
+        ("ref-", "Reference Data"),
+        ("config-", "Configuration"),
+        ("cfg-", "Configuration"),
+        ("data-", "Data"),
+        ("raw-", "Raw Data"),
+        ("src-", "Source Data"),
+        ("calc-", "Calculations"),
+        ("tmp-", "Temporary"),
+        ("test-", "Test"),
+    ]
 
     def __init__(self, analysis: WorkbookAnalysis, output_dir: Path):
-        """Initialize the builder.
-
-        Args:
-            analysis: The workbook analysis results
-            output_dir: Directory to write the report
-        """
         self.analysis = analysis
         self.output_dir = output_dir
-        self.env = Environment(loader=BaseLoader())
 
-    def build(self) -> Path:
-        """Generate the HTML report.
+        # Build cross-reference maps
+        self._build_cross_references()
 
-        Returns:
-            Path to the generated report.html
-        """
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        html = self._generate_html()
-        report_path = self.output_dir / "report.html"
-        report_path.write_text(html, encoding="utf-8")
-
-        return report_path
-
-    def _generate_html(self) -> str:
-        """Generate the complete HTML document."""
+    def _build_cross_references(self):
+        """Build maps of what each sheet contains and what references what."""
         a = self.analysis
 
-        # Generate sections
-        summary_section = self._generate_summary_section()
-        sheets_section = self._generate_sheets_section()
-        charts_section = self._generate_charts_section() if a.charts else ""
-        pivot_tables_section = self._generate_pivot_tables_section() if a.pivot_tables else ""
-        tables_section = self._generate_tables_section() if a.tables else ""
-        formulas_section = self._generate_formulas_section()
-        features_section = self._generate_features_section()
-        vba_section = self._generate_vba_section() if a.vba_modules else ""
-        pq_section = self._generate_power_query_section() if a.power_queries else ""
-        issues_section = self._generate_issues_section()
-        screenshots_section = self._generate_screenshots_section() if a.screenshots else ""
+        # Map sheet -> items it contains
+        self.sheet_formulas = defaultdict(list)
+        self.sheet_charts = defaultdict(list)
+        self.sheet_pivots = defaultdict(list)
+        self.sheet_tables = defaultdict(list)
+        self.sheet_cfs = defaultdict(list)
+        self.sheet_dvs = defaultdict(list)
+        self.sheet_comments = defaultdict(list)
+        self.sheet_hyperlinks = defaultdict(list)
+        self.sheet_errors = defaultdict(list)
+        self.sheet_controls = defaultdict(list)
 
-        return f"""<!DOCTYPE html>
+        for f in a.formulas:
+            self.sheet_formulas[f.location.sheet].append(f)
+        for c in a.charts:
+            self.sheet_charts[c.sheet].append(c)
+        for p in a.pivot_tables:
+            self.sheet_pivots[p.sheet].append(p)
+        for t in a.tables:
+            self.sheet_tables[t.sheet].append(t)
+        for cf in a.conditional_formats:
+            # CF range format is "Sheet!Range" or just "Range"
+            sheet = self._extract_sheet_from_range(cf.range, a.sheets[0].name if a.sheets else "Sheet1")
+            self.sheet_cfs[sheet].append(cf)
+        for dv in a.data_validations:
+            sheet = self._extract_sheet_from_range(dv.range, a.sheets[0].name if a.sheets else "Sheet1")
+            self.sheet_dvs[sheet].append(dv)
+        for c in a.comments:
+            self.sheet_comments[c.location.sheet].append(c)
+        for h in a.hyperlinks:
+            self.sheet_hyperlinks[h.location.sheet].append(h)
+        for e in a.error_cells:
+            self.sheet_errors[e.location.sheet].append(e)
+        for ctrl in a.controls:
+            self.sheet_controls[ctrl.sheet].append(ctrl)
+
+        # Map VBA module -> sheets that might use it (by searching for Sub/Function calls in formulas)
+        self.vba_to_sheets = defaultdict(set)
+        self.sheet_to_vba = defaultdict(set)
+
+        if a.vba_modules:
+            # Get all procedure names from VBA
+            vba_procs = {}
+            for m in a.vba_modules:
+                for proc in (m.procedures or []):
+                    vba_procs[proc.lower()] = m.name
+
+            # Search formulas for procedure calls
+            for f in a.formulas:
+                formula_lower = f.formula_clean.lower()
+                for proc, module in vba_procs.items():
+                    if proc in formula_lower:
+                        self.vba_to_sheets[module].add(f.location.sheet)
+                        self.sheet_to_vba[f.location.sheet].add(module)
+
+            # Also check controls for macro assignments
+            for ctrl in a.controls:
+                if ctrl.macro:
+                    macro_name = ctrl.macro.split(".")[-1].lower()
+                    for proc, module in vba_procs.items():
+                        if proc == macro_name:
+                            self.vba_to_sheets[module].add(ctrl.sheet)
+                            self.sheet_to_vba[ctrl.sheet].add(module)
+
+    def _extract_sheet_from_range(self, range_str: str, default_sheet: str) -> str:
+        """Extract sheet name from a range like 'Sheet1!A1:B2'."""
+        if "!" in range_str:
+            sheet_part = range_str.split("!")[0]
+            # Remove quotes if present
+            return sheet_part.strip("'\"")
+        return default_sheet
+
+    def build(self) -> Path:
+        """Generate the complete multi-page HTML report."""
+        # Create directories
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        (self.output_dir / "sheets").mkdir(exist_ok=True)
+        (self.output_dir / "workbook").mkdir(exist_ok=True)
+
+        # Write shared CSS
+        self._write_styles()
+
+        # Generate index page
+        index_path = self._generate_index()
+
+        # Generate individual sheet pages
+        for sheet in self.analysis.sheets:
+            self._generate_sheet_page(sheet)
+
+        # Generate workbook-wide pages
+        if self.analysis.vba_modules:
+            self._generate_vba_page()
+        if self.analysis.power_queries:
+            self._generate_power_query_page()
+        if self.analysis.connections or self.analysis.external_refs:
+            self._generate_connections_page()
+        if self.analysis.named_ranges:
+            self._generate_named_ranges_page()
+
+        return index_path
+
+    def _write_styles(self):
+        """Write the shared CSS file."""
+        css = self._get_styles()
+        (self.output_dir / "styles.css").write_text(css, encoding="utf-8")
+
+    def _group_sheets(self) -> dict[str, list[SheetInfo]]:
+        """Group sheets by detected prefix patterns."""
+        groups = defaultdict(list)
+        ungrouped = []
+
+        for sheet in self.analysis.sheets:
+            name_lower = sheet.name.lower()
+            matched = False
+
+            for prefix, group_name in self.GROUP_PREFIXES:
+                if name_lower.startswith(prefix):
+                    groups[group_name].append(sheet)
+                    matched = True
+                    break
+
+            if not matched:
+                ungrouped.append(sheet)
+
+        # Add ungrouped as "Main Sheets" or similar
+        if ungrouped:
+            groups["Main Sheets"] = ungrouped
+
+        return dict(groups)
+
+    def _generate_index(self) -> Path:
+        """Generate the main index.html page."""
+        a = self.analysis
+        groups = self._group_sheets()
+
+        # Build sheet groups HTML
+        groups_html = ""
+        for group_name, sheets in groups.items():
+            cards = ""
+            for s in sheets:
+                features = self._get_sheet_feature_badges(s)
+                vis_class = s.visibility.value.replace("_", "-")
+                vis_badge = "" if s.visibility == SheetVisibility.VISIBLE else f'<span class="visibility-badge {vis_class}">{s.visibility.value}</span>'
+
+                color_dot = ""
+                if s.tab_color and s.tab_color.startswith("#") and len(s.tab_color) <= 9:
+                    color_dot = f'<span class="color-dot" style="background-color: {s.tab_color}"></span>'
+
+                cards += f"""
+                <a href="sheets/{self._sheet_filename(s.name)}" class="sheet-card">
+                    <div class="sheet-card-header">
+                        {color_dot}
+                        <span class="sheet-name">{self._escape(s.name)}</span>
+                        {vis_badge}
+                    </div>
+                    <div class="sheet-card-meta">
+                        {s.row_count} rows × {s.col_count} cols
+                    </div>
+                    <div class="sheet-card-features">
+                        {features}
+                    </div>
+                </a>
+                """
+
+            groups_html += f"""
+            <div class="sheet-group">
+                <h3>{self._escape(group_name)} ({len(sheets)})</h3>
+                <div class="sheet-cards">
+                    {cards}
+                </div>
+            </div>
+            """
+
+        # Build workbook-wide nav
+        workbook_nav = ""
+        if a.vba_modules:
+            workbook_nav += f'<a href="workbook/vba.html" class="workbook-link"><span class="icon">📜</span> VBA Modules ({len(a.vba_modules)})</a>'
+        if a.power_queries:
+            workbook_nav += f'<a href="workbook/power-query.html" class="workbook-link"><span class="icon">🔄</span> Power Query ({len(a.power_queries)})</a>'
+        if a.connections or a.external_refs:
+            conn_count = len(a.connections) + len(a.external_refs)
+            workbook_nav += f'<a href="workbook/connections.html" class="workbook-link"><span class="icon">🔗</span> Connections ({conn_count})</a>'
+        if a.named_ranges:
+            workbook_nav += f'<a href="workbook/named-ranges.html" class="workbook-link"><span class="icon">📛</span> Named Ranges ({len(a.named_ranges)})</a>'
+
+        # Quick stats
+        stats = f"""
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">{len(a.sheets)}</div>
+                <div class="stat-label">Sheets</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{len(a.formulas)}</div>
+                <div class="stat-label">Formulas</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{len(a.charts)}</div>
+                <div class="stat-label">Charts</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{len(a.pivot_tables)}</div>
+                <div class="stat-label">Pivot Tables</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{len(a.tables)}</div>
+                <div class="stat-label">Tables</div>
+            </div>
+        </div>
+        """
+
+        # Warnings block
+        warnings = self._generate_warnings_block()
+
+        html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{self._escape(a.file_name)} - Excel Analysis Report</title>
-    {self._get_styles()}
+    <title>{self._escape(a.file_name)} - Excel Analysis</title>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <nav id="sidebar">
-        <h2>Navigation</h2>
-        <ul>
-            <li><a href="#summary">Summary</a></li>
-            <li><a href="#sheets">Sheets ({len(a.sheets)})</a></li>
-            {"<li><a href='#charts'>Charts (" + str(len(a.charts)) + ")</a></li>" if a.charts else ""}
-            {"<li><a href='#pivot-tables'>Pivot Tables (" + str(len(a.pivot_tables)) + ")</a></li>" if a.pivot_tables else ""}
-            {"<li><a href='#tables'>Tables (" + str(len(a.tables)) + ")</a></li>" if a.tables else ""}
-            <li><a href="#formulas">Formulas ({len(a.formulas)})</a></li>
-            <li><a href="#features">Features</a></li>
-            {"<li><a href='#vba'>VBA (" + str(len(a.vba_modules)) + ")</a></li>" if a.vba_modules else ""}
-            {"<li><a href='#power-query'>Power Query (" + str(len(a.power_queries)) + ")</a></li>" if a.power_queries else ""}
-            <li><a href="#issues">Issues</a></li>
-            {"<li><a href='#screenshots'>Screenshots</a></li>" if a.screenshots else ""}
-        </ul>
-        <div id="search-container">
-            <input type="text" id="search" placeholder="Search..." />
-        </div>
-    </nav>
+    <header class="page-header">
+        <h1>{self._escape(a.file_name)}</h1>
+        <p class="subtitle">Excel Workbook Analysis</p>
+        <p class="meta">{self._format_size(a.file_size)} · Generated {datetime.now().strftime("%Y-%m-%d %H:%M")}</p>
+    </header>
 
     <main>
-        <header>
-            <h1>{self._escape(a.file_name)}</h1>
-            <p class="subtitle">Excel Workbook Analysis Report</p>
-            <p class="generated">Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
-        </header>
+        <section class="summary-section">
+            <h2>Overview</h2>
+            {stats}
+            {warnings}
+        </section>
 
-        {summary_section}
-        {sheets_section}
-        {charts_section}
-        {pivot_tables_section}
-        {tables_section}
-        {formulas_section}
-        {features_section}
-        {vba_section}
-        {pq_section}
-        {issues_section}
-        {screenshots_section}
+        <section class="sheets-section">
+            <h2>Sheets</h2>
+            {groups_html}
+        </section>
 
-        <footer>
-            <p>Generated by Excel Analyzer for Claude Code</p>
-        </footer>
+        {f'''<section class="workbook-section">
+            <h2>Workbook-Wide</h2>
+            <div class="workbook-links">
+                {workbook_nav}
+            </div>
+        </section>''' if workbook_nav else ""}
     </main>
 
-    {self._get_scripts()}
+    <footer>
+        <p>Generated by Excel Analyzer for Claude Code</p>
+    </footer>
 </body>
 </html>"""
 
-    def _generate_summary_section(self) -> str:
-        """Generate the summary section."""
+        path = self.output_dir / "index.html"
+        path.write_text(html, encoding="utf-8")
+        return path
+
+    def _generate_sheet_page(self, sheet: SheetInfo):
+        """Generate an individual sheet page."""
+        a = self.analysis
+        name = sheet.name
+
+        # Gather all items for this sheet
+        formulas = self.sheet_formulas.get(name, [])
+        charts = self.sheet_charts.get(name, [])
+        pivots = self.sheet_pivots.get(name, [])
+        tables = self.sheet_tables.get(name, [])
+        cfs = self.sheet_cfs.get(name, [])
+        dvs = self.sheet_dvs.get(name, [])
+        comments = self.sheet_comments.get(name, [])
+        hyperlinks = self.sheet_hyperlinks.get(name, [])
+        errors = self.sheet_errors.get(name, [])
+        controls = self.sheet_controls.get(name, [])
+        vba_refs = self.sheet_to_vba.get(name, set())
+
+        # Screenshots for this sheet
+        screenshots = [s for s in a.screenshots if s.sheet == name]
+
+        # Build sections
+        sections = []
+
+        # Screenshot section
+        if screenshots:
+            sections.append(self._build_screenshot_section(screenshots))
+
+        # Charts
+        if charts:
+            sections.append(self._build_charts_section(charts))
+
+        # Pivot Tables
+        if pivots:
+            sections.append(self._build_pivots_section(pivots))
+
+        # Tables
+        if tables:
+            sections.append(self._build_tables_section(tables))
+
+        # Formulas
+        if formulas:
+            sections.append(self._build_formulas_section(formulas))
+
+        # Conditional Formatting
+        if cfs:
+            sections.append(self._build_cf_section(cfs))
+
+        # Data Validations
+        if dvs:
+            sections.append(self._build_dv_section(dvs))
+
+        # Comments
+        if comments:
+            sections.append(self._build_comments_section(comments))
+
+        # Controls
+        if controls:
+            sections.append(self._build_controls_section(controls))
+
+        # Errors
+        if errors:
+            sections.append(self._build_errors_section(errors))
+
+        # VBA References
+        if vba_refs:
+            sections.append(self._build_vba_refs_section(vba_refs))
+
+        # No content message
+        if not sections:
+            sections.append('<div class="empty-state">This sheet has no special features to display.</div>')
+
+        # Sheet metadata
+        vis_class = sheet.visibility.value.replace("_", "-")
+        visibility_html = f'<span class="visibility-badge {vis_class}">{sheet.visibility.value}</span>'
+
+        color_html = ""
+        if sheet.tab_color and sheet.tab_color.startswith("#") and len(sheet.tab_color) <= 9:
+            color_html = f'<span class="color-dot large" style="background-color: {sheet.tab_color}"></span>'
+
+        # Navigation for sections
+        nav_items = []
+        if screenshots:
+            nav_items.append('<a href="#screenshots">Screenshots</a>')
+        if charts:
+            nav_items.append(f'<a href="#charts">Charts ({len(charts)})</a>')
+        if pivots:
+            nav_items.append(f'<a href="#pivots">Pivot Tables ({len(pivots)})</a>')
+        if tables:
+            nav_items.append(f'<a href="#tables">Tables ({len(tables)})</a>')
+        if formulas:
+            nav_items.append(f'<a href="#formulas">Formulas ({len(formulas)})</a>')
+        if cfs:
+            nav_items.append(f'<a href="#cf">Conditional Formatting ({len(cfs)})</a>')
+        if dvs:
+            nav_items.append(f'<a href="#dv">Data Validation ({len(dvs)})</a>')
+        if comments:
+            nav_items.append(f'<a href="#comments">Comments ({len(comments)})</a>')
+        if controls:
+            nav_items.append(f'<a href="#controls">Controls ({len(controls)})</a>')
+        if errors:
+            nav_items.append(f'<a href="#errors">Errors ({len(errors)})</a>')
+        if vba_refs:
+            nav_items.append(f'<a href="#vba">VBA ({len(vba_refs)})</a>')
+
+        nav_html = " · ".join(nav_items) if nav_items else ""
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{self._escape(name)} - {self._escape(a.file_name)}</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <nav class="breadcrumb">
+        <a href="../index.html">← Back to Index</a>
+    </nav>
+
+    <header class="page-header sheet-header">
+        <div class="sheet-title">
+            {color_html}
+            <h1>{self._escape(name)}</h1>
+            {visibility_html}
+        </div>
+        <div class="sheet-meta">
+            {sheet.row_count} rows × {sheet.col_count} cols
+        </div>
+        {f'<div class="sheet-nav">{nav_html}</div>' if nav_html else ''}
+    </header>
+
+    <main>
+        {"".join(sections)}
+    </main>
+
+    <footer>
+        <p>Generated by Excel Analyzer for Claude Code</p>
+    </footer>
+</body>
+</html>"""
+
+        path = self.output_dir / "sheets" / self._sheet_filename(name)
+        path.write_text(html, encoding="utf-8")
+
+    def _build_screenshot_section(self, screenshots) -> str:
+        """Build screenshots section for a sheet."""
+        views = {}
+        for s in screenshots:
+            filename = s.path.name
+            if "_100." in filename:
+                views["normal"] = filename
+            elif "_65." in filename:
+                views["birdseye"] = filename
+            else:
+                views["normal"] = filename
+
+        imgs = ""
+        if views.get("normal"):
+            imgs += f'''
+            <div class="screenshot-view">
+                <span class="zoom-label">100% (Normal)</span>
+                <a href="../screenshots/{views["normal"]}" target="_blank">
+                    <img src="../screenshots/{views["normal"]}" alt="Normal View" loading="lazy" />
+                </a>
+            </div>'''
+        if views.get("birdseye"):
+            imgs += f'''
+            <div class="screenshot-view">
+                <span class="zoom-label">65% (Bird's Eye)</span>
+                <a href="../screenshots/{views["birdseye"]}" target="_blank">
+                    <img src="../screenshots/{views["birdseye"]}" alt="Bird's Eye View" loading="lazy" />
+                </a>
+            </div>'''
+
+        return f'''
+        <section id="screenshots" class="content-section">
+            <h2>Screenshots</h2>
+            <div class="screenshot-views">{imgs}</div>
+        </section>'''
+
+    def _build_charts_section(self, charts) -> str:
+        """Build charts section for a sheet."""
+        cards = ""
+        for c in charts:
+            title_html = f"<p><strong>Title:</strong> {self._escape(c.title)}</p>" if c.title else ""
+            data_html = f"<p><strong>Data:</strong> <code>{self._escape(c.data_range)}</code></p>" if c.data_range else ""
+
+            cards += f'''
+            <div class="item-card chart-card">
+                <div class="item-header">
+                    <span class="item-type">{self._escape(c.chart_type)}</span>
+                    <span class="item-name">{self._escape(c.name)}</span>
+                </div>
+                <div class="item-details">
+                    {title_html}
+                    {data_html}
+                </div>
+            </div>'''
+
+        return f'''
+        <section id="charts" class="content-section">
+            <h2>Charts ({len(charts)})</h2>
+            <div class="item-grid">{cards}</div>
+        </section>'''
+
+    def _build_pivots_section(self, pivots) -> str:
+        """Build pivot tables section for a sheet."""
+        cards = ""
+        for p in pivots:
+            rows = f"<p><strong>Rows:</strong> {', '.join(p.row_fields)}</p>" if p.row_fields else ""
+            cols = f"<p><strong>Columns:</strong> {', '.join(p.column_fields)}</p>" if p.column_fields else ""
+            vals = f"<p><strong>Values:</strong> {', '.join(p.data_fields)}</p>" if p.data_fields else ""
+            source = f"<p><strong>Source:</strong> <code>{self._escape(p.source_range)}</code></p>" if p.source_range else ""
+
+            cards += f'''
+            <div class="item-card pivot-card">
+                <div class="item-header">
+                    <span class="item-name">{self._escape(p.name)}</span>
+                    <span class="item-location">{self._escape(p.location)}</span>
+                </div>
+                <div class="item-details">
+                    {source}
+                    {rows}
+                    {cols}
+                    {vals}
+                </div>
+            </div>'''
+
+        return f'''
+        <section id="pivots" class="content-section">
+            <h2>Pivot Tables ({len(pivots)})</h2>
+            <div class="item-grid">{cards}</div>
+        </section>'''
+
+    def _build_tables_section(self, tables) -> str:
+        """Build structured tables section for a sheet."""
+        cards = ""
+        for t in tables:
+            cols = ", ".join(t.columns[:6]) if t.columns else "-"
+            if len(t.columns) > 6:
+                cols += f" (+{len(t.columns) - 6} more)"
+
+            cards += f'''
+            <div class="item-card table-card">
+                <div class="item-header">
+                    <span class="item-name">{self._escape(t.display_name)}</span>
+                </div>
+                <div class="item-details">
+                    <p><strong>Range:</strong> <code>{self._escape(t.range)}</code></p>
+                    <p><strong>Columns:</strong> {self._escape(cols)}</p>
+                </div>
+            </div>'''
+
+        return f'''
+        <section id="tables" class="content-section">
+            <h2>Structured Tables ({len(tables)})</h2>
+            <div class="item-grid">{cards}</div>
+        </section>'''
+
+    def _build_formulas_section(self, formulas) -> str:
+        """Build formulas section for a sheet."""
+        # Group by category
+        by_cat = defaultdict(list)
+        for f in formulas:
+            by_cat[f.category.value].append(f)
+
+        content = ""
+        for cat, cat_formulas in sorted(by_cat.items(), key=lambda x: -len(x[1])):
+            rows = ""
+            for f in cat_formulas[:20]:  # Limit per category
+                preview = f.formula_clean[:60]
+                if len(f.formula_clean) > 60:
+                    preview += "..."
+                rows += f'''
+                <tr>
+                    <td>{f.location.cell}</td>
+                    <td><code>{self._escape(preview)}</code></td>
+                </tr>'''
+
+            more = f"<p class='more-note'>...and {len(cat_formulas) - 20} more</p>" if len(cat_formulas) > 20 else ""
+
+            content += f'''
+            <div class="formula-category">
+                <h4>{cat} ({len(cat_formulas)})</h4>
+                <table class="data-table">
+                    <thead><tr><th>Cell</th><th>Formula</th></tr></thead>
+                    <tbody>{rows}</tbody>
+                </table>
+                {more}
+            </div>'''
+
+        return f'''
+        <section id="formulas" class="content-section">
+            <h2>Formulas ({len(formulas)})</h2>
+            {content}
+        </section>'''
+
+    def _build_cf_section(self, cfs) -> str:
+        """Build conditional formatting section."""
+        rows = ""
+        for cf in cfs[:30]:
+            rows += f'''
+            <tr>
+                <td>{self._escape(cf.range.split("!")[-1] if "!" in cf.range else cf.range)}</td>
+                <td>{cf.rule_type.value}</td>
+                <td>{self._escape(cf.description)}</td>
+            </tr>'''
+
+        more = f"<p class='more-note'>...and {len(cfs) - 30} more rules</p>" if len(cfs) > 30 else ""
+
+        return f'''
+        <section id="cf" class="content-section">
+            <h2>Conditional Formatting ({len(cfs)})</h2>
+            <table class="data-table">
+                <thead><tr><th>Range</th><th>Type</th><th>Description</th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+            {more}
+        </section>'''
+
+    def _build_dv_section(self, dvs) -> str:
+        """Build data validation section."""
+        rows = ""
+        for dv in dvs[:30]:
+            formula = dv.formula1 or "-"
+            if len(formula) > 40:
+                formula = formula[:40] + "..."
+            rows += f'''
+            <tr>
+                <td>{self._escape(dv.range.split("!")[-1] if "!" in dv.range else dv.range)}</td>
+                <td>{dv.type}</td>
+                <td><code>{self._escape(formula)}</code></td>
+            </tr>'''
+
+        more = f"<p class='more-note'>...and {len(dvs) - 30} more rules</p>" if len(dvs) > 30 else ""
+
+        return f'''
+        <section id="dv" class="content-section">
+            <h2>Data Validation ({len(dvs)})</h2>
+            <table class="data-table">
+                <thead><tr><th>Range</th><th>Type</th><th>Formula/List</th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+            {more}
+        </section>'''
+
+    def _build_comments_section(self, comments) -> str:
+        """Build comments section."""
+        items = ""
+        for c in comments[:20]:
+            text = c.text[:100] + "..." if len(c.text) > 100 else c.text
+            items += f'''
+            <div class="comment-item">
+                <span class="comment-cell">{c.location.cell}</span>
+                <span class="comment-author">{self._escape(c.author or "Unknown")}</span>
+                <p class="comment-text">{self._escape(text)}</p>
+            </div>'''
+
+        more = f"<p class='more-note'>...and {len(comments) - 20} more comments</p>" if len(comments) > 20 else ""
+
+        return f'''
+        <section id="comments" class="content-section">
+            <h2>Comments ({len(comments)})</h2>
+            <div class="comments-list">{items}</div>
+            {more}
+        </section>'''
+
+    def _build_controls_section(self, controls) -> str:
+        """Build form controls section."""
+        rows = ""
+        for c in controls:
+            macro = c.macro or "-"
+            rows += f'''
+            <tr>
+                <td>{self._escape(c.name)}</td>
+                <td>{c.control_type}</td>
+                <td><code>{self._escape(macro)}</code></td>
+            </tr>'''
+
+        return f'''
+        <section id="controls" class="content-section">
+            <h2>Form Controls ({len(controls)})</h2>
+            <table class="data-table">
+                <thead><tr><th>Name</th><th>Type</th><th>Macro</th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+        </section>'''
+
+    def _build_errors_section(self, errors) -> str:
+        """Build errors section."""
+        rows = ""
+        for e in errors[:30]:
+            formula = e.formula or "-"
+            if len(formula) > 50:
+                formula = formula[:50] + "..."
+            rows += f'''
+            <tr>
+                <td>{e.location.cell}</td>
+                <td class="error-type">{e.error_type.value}</td>
+                <td><code>{self._escape(formula)}</code></td>
+            </tr>'''
+
+        more = f"<p class='more-note'>...and {len(errors) - 30} more errors</p>" if len(errors) > 30 else ""
+
+        return f'''
+        <section id="errors" class="content-section">
+            <h2>Errors ({len(errors)})</h2>
+            <table class="data-table">
+                <thead><tr><th>Cell</th><th>Error</th><th>Formula</th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+            {more}
+        </section>'''
+
+    def _build_vba_refs_section(self, vba_refs) -> str:
+        """Build VBA references section."""
+        links = ""
+        for module in sorted(vba_refs):
+            links += f'<a href="../workbook/vba.html#{self._slug(module)}" class="vba-link">{self._escape(module)}</a>'
+
+        return f'''
+        <section id="vba" class="content-section">
+            <h2>VBA Modules Used</h2>
+            <p>This sheet references the following VBA modules:</p>
+            <div class="vba-links">{links}</div>
+        </section>'''
+
+    def _generate_vba_page(self):
+        """Generate the VBA modules workbook-wide page."""
         a = self.analysis
 
-        # Count by visibility
-        visible = sum(1 for s in a.sheets if s.visibility == SheetVisibility.VISIBLE)
-        hidden = sum(1 for s in a.sheets if s.visibility == SheetVisibility.HIDDEN)
-        very_hidden = sum(1 for s in a.sheets if s.visibility == SheetVisibility.VERY_HIDDEN)
+        modules_html = ""
+        for m in a.vba_modules:
+            # Get sheets that use this module
+            using_sheets = self.vba_to_sheets.get(m.name, set())
+            sheets_html = ""
+            if using_sheets:
+                sheet_links = ", ".join(
+                    f'<a href="../sheets/{self._sheet_filename(s)}">{self._escape(s)}</a>'
+                    for s in sorted(using_sheets)
+                )
+                sheets_html = f'<p><strong>Used by sheets:</strong> {sheet_links}</p>'
 
-        # Formula categories
-        cats = {}
-        for f in a.formulas:
-            cats[f.category.value] = cats.get(f.category.value, 0) + 1
+            # Syntax highlight
+            try:
+                highlighted = highlight(m.code, VbNetLexer(), HtmlFormatter(nowrap=True))
+            except Exception:
+                highlighted = self._escape(m.code)
 
-        formula_breakdown = ""
-        for cat, count in sorted(cats.items(), key=lambda x: -x[1]):
-            formula_breakdown += f"<li>{cat}: {count}</li>"
+            procs = ", ".join(m.procedures) if m.procedures else "None"
 
-        features_list = ""
-        if a.conditional_formats:
-            features_list += f"<li>Conditional Formatting ({len(a.conditional_formats)} rules)</li>"
-        if a.data_validations:
-            features_list += f"<li>Data Validations ({len(a.data_validations)} rules)</li>"
-        if a.tables:
-            features_list += f"<li>Tables ({len(a.tables)})</li>"
-        if a.pivot_tables:
-            features_list += f"<li>Pivot Tables ({len(a.pivot_tables)})</li>"
-        if a.charts:
-            features_list += f"<li>Charts ({len(a.charts)})</li>"
-        if a.vba_modules:
-            features_list += f"<li>VBA Macros ({len(a.vba_modules)} modules)</li>"
-        if a.power_queries:
-            features_list += f"<li>Power Query ({len(a.power_queries)} queries)</li>"
-        if a.has_dax:
-            features_list += f"<li>Power Pivot/DAX</li>"
-        if a.comments:
-            features_list += f"<li>Comments ({len(a.comments)})</li>"
-        if a.hyperlinks:
-            features_list += f"<li>Hyperlinks ({len(a.hyperlinks)})</li>"
-        if a.controls:
-            features_list += f"<li>Form Controls ({len(a.controls)})</li>"
-
-        return f"""
-        <section id="summary" class="section">
-            <h2>Summary</h2>
-
-            <div class="card-grid">
-                <div class="card">
-                    <h3>File Info</h3>
-                    <table class="info-table">
-                        <tr><th>File Name</th><td>{self._escape(a.file_name)}</td></tr>
-                        <tr><th>File Size</th><td>{self._format_size(a.file_size)}</td></tr>
-                        <tr><th>Macro Enabled</th><td>{"Yes" if a.is_macro_enabled else "No"}</td></tr>
-                    </table>
+            modules_html += f'''
+            <div id="{self._slug(m.name)}" class="vba-module">
+                <div class="module-header" onclick="toggleModule(this)">
+                    <h3>{self._escape(m.name)}</h3>
+                    <span class="module-info">{m.module_type} · {m.line_count} lines · {len(m.procedures or [])} procedures</span>
                 </div>
-
-                <div class="card">
-                    <h3>Sheets</h3>
-                    <div class="stat-large">{len(a.sheets)}</div>
-                    <ul class="stat-breakdown">
-                        <li>Visible: {visible}</li>
-                        <li>Hidden: {hidden}</li>
-                        <li>Very Hidden: {very_hidden}</li>
-                    </ul>
+                <div class="module-content collapsed">
+                    <p><strong>Procedures:</strong> {self._escape(procs)}</p>
+                    {sheets_html}
+                    <pre class="code-block"><code>{highlighted}</code></pre>
                 </div>
+            </div>'''
 
-                <div class="card">
-                    <h3>Formulas</h3>
-                    <div class="stat-large">{len(a.formulas)}</div>
-                    <ul class="stat-breakdown">
-                        {formula_breakdown}
-                    </ul>
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VBA Modules - {self._escape(a.file_name)}</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <nav class="breadcrumb">
+        <a href="../index.html">← Back to Index</a>
+    </nav>
+
+    <header class="page-header">
+        <h1>VBA Modules</h1>
+        <p class="subtitle">{len(a.vba_modules)} modules in {self._escape(a.file_name)}</p>
+    </header>
+
+    <main>
+        {modules_html}
+    </main>
+
+    <footer>
+        <p>Generated by Excel Analyzer for Claude Code</p>
+    </footer>
+
+    <script>
+        function toggleModule(header) {{
+            header.nextElementSibling.classList.toggle('collapsed');
+        }}
+    </script>
+</body>
+</html>"""
+
+        (self.output_dir / "workbook" / "vba.html").write_text(html, encoding="utf-8")
+
+    def _generate_power_query_page(self):
+        """Generate the Power Query workbook-wide page."""
+        a = self.analysis
+
+        queries_html = ""
+        for q in a.power_queries:
+            try:
+                lexer = get_lexer_by_name("text")
+                highlighted = highlight(q.formula, lexer, HtmlFormatter(nowrap=True))
+            except Exception:
+                highlighted = self._escape(q.formula)
+
+            queries_html += f'''
+            <div class="pq-query">
+                <div class="query-header" onclick="toggleModule(this)">
+                    <h3>{self._escape(q.name)}</h3>
                 </div>
-
-                <div class="card">
-                    <h3>Features</h3>
-                    <ul class="feature-list">
-                        {features_list if features_list else "<li>No advanced features</li>"}
-                    </ul>
+                <div class="query-content collapsed">
+                    {f"<p>{self._escape(q.description)}</p>" if q.description else ""}
+                    <pre class="code-block"><code>{highlighted}</code></pre>
                 </div>
-            </div>
+            </div>'''
 
-            {self._generate_warnings_block()}
-        </section>
-        """
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Power Query - {self._escape(a.file_name)}</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <nav class="breadcrumb">
+        <a href="../index.html">← Back to Index</a>
+    </nav>
+
+    <header class="page-header">
+        <h1>Power Query</h1>
+        <p class="subtitle">{len(a.power_queries)} queries in {self._escape(a.file_name)}</p>
+    </header>
+
+    <main>
+        {queries_html}
+    </main>
+
+    <footer>
+        <p>Generated by Excel Analyzer for Claude Code</p>
+    </footer>
+
+    <script>
+        function toggleModule(header) {{
+            header.nextElementSibling.classList.toggle('collapsed');
+        }}
+    </script>
+</body>
+</html>"""
+
+        (self.output_dir / "workbook" / "power-query.html").write_text(html, encoding="utf-8")
+
+    def _generate_connections_page(self):
+        """Generate the connections workbook-wide page."""
+        a = self.analysis
+
+        content = ""
+
+        if a.connections:
+            rows = ""
+            for c in a.connections:
+                conn_str = c.connection_string or "-"
+                if len(conn_str) > 60:
+                    conn_str = conn_str[:60] + "..."
+                rows += f'''
+                <tr>
+                    <td>{self._escape(c.name)}</td>
+                    <td>{c.connection_type}</td>
+                    <td><code>{self._escape(conn_str)}</code></td>
+                </tr>'''
+
+            content += f'''
+            <section class="content-section">
+                <h2>Data Connections ({len(a.connections)})</h2>
+                <table class="data-table">
+                    <thead><tr><th>Name</th><th>Type</th><th>Connection</th></tr></thead>
+                    <tbody>{rows}</tbody>
+                </table>
+            </section>'''
+
+        if a.external_refs:
+            rows = ""
+            for ref in a.external_refs:
+                status = '<span class="badge error">Broken</span>' if ref.is_broken else ""
+                source = ref.source_cell.address if ref.source_cell.cell else "-"
+                rows += f'''
+                <tr>
+                    <td>{self._escape(source)}</td>
+                    <td>{self._escape(ref.target_workbook)}</td>
+                    <td>{self._escape(ref.target_sheet or "-")}</td>
+                    <td>{status}</td>
+                </tr>'''
+
+            content += f'''
+            <section class="content-section">
+                <h2>External References ({len(a.external_refs)})</h2>
+                <table class="data-table">
+                    <thead><tr><th>Source</th><th>Workbook</th><th>Sheet</th><th>Status</th></tr></thead>
+                    <tbody>{rows}</tbody>
+                </table>
+            </section>'''
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connections - {self._escape(a.file_name)}</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <nav class="breadcrumb">
+        <a href="../index.html">← Back to Index</a>
+    </nav>
+
+    <header class="page-header">
+        <h1>Connections & External References</h1>
+        <p class="subtitle">{self._escape(a.file_name)}</p>
+    </header>
+
+    <main>
+        {content}
+    </main>
+
+    <footer>
+        <p>Generated by Excel Analyzer for Claude Code</p>
+    </footer>
+</body>
+</html>"""
+
+        (self.output_dir / "workbook" / "connections.html").write_text(html, encoding="utf-8")
+
+    def _generate_named_ranges_page(self):
+        """Generate the named ranges workbook-wide page."""
+        a = self.analysis
+
+        lambdas = [n for n in a.named_ranges if n.is_lambda]
+        regular = [n for n in a.named_ranges if not n.is_lambda]
+
+        content = ""
+
+        if lambdas:
+            items = ""
+            for n in lambdas:
+                items += f'''
+                <div class="lambda-def">
+                    <h4>{self._escape(n.name)}</h4>
+                    <pre><code>{self._escape(n.value)}</code></pre>
+                </div>'''
+
+            content += f'''
+            <section class="content-section">
+                <h2>LAMBDA Functions ({len(lambdas)})</h2>
+                {items}
+            </section>'''
+
+        if regular:
+            rows = ""
+            for n in regular[:100]:
+                scope = n.scope or "Global"
+                value = n.value[:60] + "..." if len(n.value) > 60 else n.value
+                rows += f'''
+                <tr>
+                    <td>{self._escape(n.name)}</td>
+                    <td><code>{self._escape(value)}</code></td>
+                    <td>{self._escape(scope)}</td>
+                </tr>'''
+
+            more = f"<p class='more-note'>...and {len(regular) - 100} more</p>" if len(regular) > 100 else ""
+
+            content += f'''
+            <section class="content-section">
+                <h2>Named Ranges ({len(regular)})</h2>
+                <table class="data-table">
+                    <thead><tr><th>Name</th><th>Value</th><th>Scope</th></tr></thead>
+                    <tbody>{rows}</tbody>
+                </table>
+                {more}
+            </section>'''
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Named Ranges - {self._escape(a.file_name)}</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <nav class="breadcrumb">
+        <a href="../index.html">← Back to Index</a>
+    </nav>
+
+    <header class="page-header">
+        <h1>Named Ranges</h1>
+        <p class="subtitle">{len(a.named_ranges)} definitions in {self._escape(a.file_name)}</p>
+    </header>
+
+    <main>
+        {content}
+    </main>
+
+    <footer>
+        <p>Generated by Excel Analyzer for Claude Code</p>
+    </footer>
+</body>
+</html>"""
+
+        (self.output_dir / "workbook" / "named-ranges.html").write_text(html, encoding="utf-8")
 
     def _generate_warnings_block(self) -> str:
         """Generate warnings/errors block if any."""
         a = self.analysis
-
         if not a.errors and not a.warnings:
             return ""
 
@@ -214,1282 +1031,40 @@ class HTMLReportBuilder:
         for w in a.warnings:
             items += f'<li class="warning">{self._escape(w.extractor)}: {self._escape(w.message)}</li>'
 
-        return f"""
+        return f'''
         <div class="warnings-block">
             <h4>Extraction Notes</h4>
             <ul>{items}</ul>
-        </div>
-        """
-
-    def _generate_sheets_section(self) -> str:
-        """Generate the sheets section."""
-        rows = ""
-        for s in self.analysis.sheets:
-            features = []
-            if s.has_formulas:
-                features.append('<span class="badge">Formulas</span>')
-            if s.has_charts:
-                features.append('<span class="badge">Charts</span>')
-            if s.has_pivots:
-                features.append('<span class="badge">Pivots</span>')
-            if s.has_tables:
-                features.append('<span class="badge">Tables</span>')
-            if s.has_conditional_formatting:
-                features.append('<span class="badge">CF</span>')
-            if s.has_data_validation:
-                features.append('<span class="badge">DV</span>')
-
-            vis_class = s.visibility.value.replace("_", "-")
-            features_html = " ".join(features) if features else "-"
-
-            color_indicator = ""
-            if s.tab_color:
-                color_indicator = f'<span class="color-dot" style="background-color: {s.tab_color}"></span>'
-
-            rows += f"""
-            <tr class="sheet-row" data-sheet="{self._escape(s.name)}">
-                <td>{s.index + 1}</td>
-                <td>{color_indicator}{self._escape(s.name)}</td>
-                <td><span class="visibility {vis_class}">{s.visibility.value}</span></td>
-                <td>{s.row_count}</td>
-                <td>{s.col_count}</td>
-                <td>{features_html}</td>
-            </tr>
-            """
-
-        return f"""
-        <section id="sheets" class="section">
-            <h2>Sheets</h2>
-            <table class="data-table sortable">
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Name</th>
-                        <th>Visibility</th>
-                        <th>Rows</th>
-                        <th>Cols</th>
-                        <th>Features</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {rows}
-                </tbody>
-            </table>
-        </section>
-        """
-
-    def _generate_formulas_section(self) -> str:
-        """Generate the formulas section."""
-        # Named ranges
-        named_ranges_html = ""
-        lambdas = [n for n in self.analysis.named_ranges if n.is_lambda]
-        regular = [n for n in self.analysis.named_ranges if not n.is_lambda]
-
-        if lambdas:
-            lambda_items = ""
-            for n in lambdas:
-                lambda_items += f"""
-                <div class="lambda-def">
-                    <h4>{self._escape(n.name)}</h4>
-                    <pre><code>{self._escape(n.value)}</code></pre>
-                </div>
-                """
-            named_ranges_html += f"""
-            <div class="subsection">
-                <h3>LAMBDA Functions ({len(lambdas)})</h3>
-                {lambda_items}
-            </div>
-            """
-
-        if regular:
-            regular_rows = ""
-            for n in regular[:50]:
-                scope = n.scope or "Global"
-                regular_rows += f"""
-                <tr>
-                    <td>{self._escape(n.name)}</td>
-                    <td><code>{self._escape(n.value[:60])}</code></td>
-                    <td>{scope}</td>
-                </tr>
-                """
-            more = f"<p><em>...and {len(regular) - 50} more</em></p>" if len(regular) > 50 else ""
-            named_ranges_html += f"""
-            <div class="subsection">
-                <h3>Named Ranges ({len(regular)})</h3>
-                <table class="data-table">
-                    <thead>
-                        <tr><th>Name</th><th>Value</th><th>Scope</th></tr>
-                    </thead>
-                    <tbody>{regular_rows}</tbody>
-                </table>
-                {more}
-            </div>
-            """
-
-        # Formulas table
-        formula_rows = ""
-        for f in self.analysis.formulas[:100]:
-            preview = f.formula_clean[:80]
-            if len(f.formula_clean) > 80:
-                preview += "..."
-            formula_rows += f"""
-            <tr>
-                <td>{self._escape(f.location.sheet)}</td>
-                <td>{f.location.cell}</td>
-                <td><span class="badge">{f.category.value}</span></td>
-                <td><code class="formula">{self._escape(preview)}</code></td>
-            </tr>
-            """
-
-        more_formulas = ""
-        if len(self.analysis.formulas) > 100:
-            more_formulas = f"<p><em>Showing first 100 of {len(self.analysis.formulas)} formulas</em></p>"
-
-        return f"""
-        <section id="formulas" class="section">
-            <h2>Formulas</h2>
-
-            {named_ranges_html}
-
-            <div class="subsection">
-                <h3>All Formulas ({len(self.analysis.formulas)})</h3>
-                {more_formulas}
-                <table class="data-table sortable">
-                    <thead>
-                        <tr>
-                            <th>Sheet</th>
-                            <th>Cell</th>
-                            <th>Category</th>
-                            <th>Formula</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {formula_rows}
-                    </tbody>
-                </table>
-            </div>
-        </section>
-        """
-
-    def _generate_features_section(self) -> str:
-        """Generate the features section."""
-        subsections = ""
-
-        # Conditional Formatting
-        if self.analysis.conditional_formats:
-            cf_rows = ""
-            for cf in self.analysis.conditional_formats[:50]:
-                cf_rows += f"""
-                <tr>
-                    <td>{self._escape(cf.range)}</td>
-                    <td>{cf.rule_type.value}</td>
-                    <td>{self._escape(cf.description)}</td>
-                </tr>
-                """
-            subsections += f"""
-            <div class="subsection">
-                <h3>Conditional Formatting ({len(self.analysis.conditional_formats)})</h3>
-                <table class="data-table">
-                    <thead><tr><th>Range</th><th>Type</th><th>Description</th></tr></thead>
-                    <tbody>{cf_rows}</tbody>
-                </table>
-            </div>
-            """
-
-        # Data Validations
-        if self.analysis.data_validations:
-            dv_rows = ""
-            for dv in self.analysis.data_validations[:50]:
-                formula = dv.formula1 or "-"
-                if len(formula) > 50:
-                    formula = formula[:50] + "..."
-                dv_rows += f"""
-                <tr>
-                    <td>{self._escape(dv.range)}</td>
-                    <td>{dv.type}</td>
-                    <td><code>{self._escape(formula)}</code></td>
-                </tr>
-                """
-            subsections += f"""
-            <div class="subsection">
-                <h3>Data Validations ({len(self.analysis.data_validations)})</h3>
-                <table class="data-table">
-                    <thead><tr><th>Range</th><th>Type</th><th>Formula/List</th></tr></thead>
-                    <tbody>{dv_rows}</tbody>
-                </table>
-            </div>
-            """
-
-        # Tables
-        if self.analysis.tables:
-            table_cards = ""
-            for t in self.analysis.tables:
-                cols = ", ".join(t.columns[:5])
-                if len(t.columns) > 5:
-                    cols += f" (+{len(t.columns) - 5} more)"
-                table_cards += f"""
-                <div class="feature-card">
-                    <h4>{self._escape(t.display_name)}</h4>
-                    <p><strong>Sheet:</strong> {self._escape(t.sheet)}</p>
-                    <p><strong>Range:</strong> {t.range}</p>
-                    <p><strong>Columns:</strong> {self._escape(cols)}</p>
-                </div>
-                """
-            subsections += f"""
-            <div class="subsection">
-                <h3>Structured Tables ({len(self.analysis.tables)})</h3>
-                <div class="feature-grid">{table_cards}</div>
-            </div>
-            """
-
-        # Pivot Tables
-        if self.analysis.pivot_tables:
-            pivot_cards = ""
-            for p in self.analysis.pivot_tables:
-                pivot_cards += f"""
-                <div class="feature-card">
-                    <h4>{self._escape(p.name)}</h4>
-                    <p><strong>Sheet:</strong> {self._escape(p.sheet)}</p>
-                    <p><strong>Location:</strong> {p.location}</p>
-                    {"<p><strong>Rows:</strong> " + ", ".join(p.row_fields) + "</p>" if p.row_fields else ""}
-                    {"<p><strong>Values:</strong> " + ", ".join(p.data_fields) + "</p>" if p.data_fields else ""}
-                </div>
-                """
-            subsections += f"""
-            <div class="subsection">
-                <h3>Pivot Tables ({len(self.analysis.pivot_tables)})</h3>
-                <div class="feature-grid">{pivot_cards}</div>
-            </div>
-            """
-
-        # Charts
-        if self.analysis.charts:
-            chart_rows = ""
-            for c in self.analysis.charts:
-                chart_rows += f"""
-                <tr>
-                    <td>{self._escape(c.name)}</td>
-                    <td>{self._escape(c.sheet)}</td>
-                    <td>{c.chart_type}</td>
-                    <td>{self._escape(c.title or '-')}</td>
-                </tr>
-                """
-            subsections += f"""
-            <div class="subsection">
-                <h3>Charts ({len(self.analysis.charts)})</h3>
-                <table class="data-table">
-                    <thead><tr><th>Name</th><th>Sheet</th><th>Type</th><th>Title</th></tr></thead>
-                    <tbody>{chart_rows}</tbody>
-                </table>
-            </div>
-            """
-
-        # Controls
-        if self.analysis.controls:
-            control_rows = ""
-            for c in self.analysis.controls:
-                macro = c.macro or "-"
-                control_rows += f"""
-                <tr>
-                    <td>{self._escape(c.name)}</td>
-                    <td>{self._escape(c.sheet)}</td>
-                    <td>{c.control_type}</td>
-                    <td><code>{self._escape(macro)}</code></td>
-                </tr>
-                """
-            subsections += f"""
-            <div class="subsection">
-                <h3>Form Controls ({len(self.analysis.controls)})</h3>
-                <table class="data-table">
-                    <thead><tr><th>Name</th><th>Sheet</th><th>Type</th><th>Macro</th></tr></thead>
-                    <tbody>{control_rows}</tbody>
-                </table>
-            </div>
-            """
-
-        # Connections
-        if self.analysis.connections:
-            conn_rows = ""
-            for c in self.analysis.connections:
-                conn_str = c.connection_string or "-"
-                if len(conn_str) > 60:
-                    conn_str = conn_str[:60] + "..."
-                conn_rows += f"""
-                <tr>
-                    <td>{self._escape(c.name)}</td>
-                    <td>{c.connection_type}</td>
-                    <td><code>{self._escape(conn_str)}</code></td>
-                </tr>
-                """
-            subsections += f"""
-            <div class="subsection">
-                <h3>Data Connections ({len(self.analysis.connections)})</h3>
-                <table class="data-table">
-                    <thead><tr><th>Name</th><th>Type</th><th>Connection</th></tr></thead>
-                    <tbody>{conn_rows}</tbody>
-                </table>
-            </div>
-            """
-
-        if not subsections:
-            subsections = "<p>No advanced features found in this workbook.</p>"
-
-        return f"""
-        <section id="features" class="section">
-            <h2>Features</h2>
-            {subsections}
-        </section>
-        """
-
-    def _generate_vba_section(self) -> str:
-        """Generate the VBA section."""
-        if not self.analysis.vba_modules:
-            return ""
-
-        modules_html = ""
-        for m in self.analysis.vba_modules:
-            # Syntax highlight the code
-            try:
-                highlighted = highlight(m.code, VbNetLexer(), HtmlFormatter(nowrap=True))
-            except Exception:
-                highlighted = self._escape(m.code)
-
-            procs = ", ".join(m.procedures) if m.procedures else "None"
-
-            modules_html += f"""
-            <div class="vba-module collapsible">
-                <div class="module-header" onclick="toggleCollapse(this)">
-                    <h4>{self._escape(m.name)}</h4>
-                    <span class="module-info">{m.module_type} | {m.line_count} lines</span>
-                </div>
-                <div class="module-content collapsed">
-                    <p><strong>Procedures:</strong> {self._escape(procs)}</p>
-                    <pre class="code-block"><code>{highlighted}</code></pre>
-                </div>
-            </div>
-            """
-
-        return f"""
-        <section id="vba" class="section">
-            <h2>VBA Modules ({len(self.analysis.vba_modules)})</h2>
-            {modules_html}
-        </section>
-        """
-
-    def _generate_power_query_section(self) -> str:
-        """Generate the Power Query section."""
-        if not self.analysis.power_queries:
-            return ""
-
-        queries_html = ""
-        for q in self.analysis.power_queries:
-            # Try to highlight M code
-            try:
-                lexer = get_lexer_by_name("text")  # M doesn't have a standard lexer
-                highlighted = highlight(q.formula, lexer, HtmlFormatter(nowrap=True))
-            except Exception:
-                highlighted = self._escape(q.formula)
-
-            queries_html += f"""
-            <div class="pq-query collapsible">
-                <div class="query-header" onclick="toggleCollapse(this)">
-                    <h4>{self._escape(q.name)}</h4>
-                </div>
-                <div class="query-content collapsed">
-                    {"<p>" + self._escape(q.description) + "</p>" if q.description else ""}
-                    <pre class="code-block"><code>{highlighted}</code></pre>
-                </div>
-            </div>
-            """
-
-        return f"""
-        <section id="power-query" class="section">
-            <h2>Power Query ({len(self.analysis.power_queries)})</h2>
-            {queries_html}
-        </section>
-        """
-
-    def _generate_issues_section(self) -> str:
-        """Generate the issues section."""
-        subsections = ""
-
-        # Error cells
-        if self.analysis.error_cells:
-            error_rows = ""
-            for e in self.analysis.error_cells[:50]:
-                formula = e.formula or "-"
-                error_rows += f"""
-                <tr>
-                    <td>{self._escape(e.location.address)}</td>
-                    <td class="error-type">{e.error_type.value}</td>
-                    <td><code>{self._escape(formula)}</code></td>
-                </tr>
-                """
-            more = f"<p><em>...and {len(self.analysis.error_cells) - 50} more</em></p>" if len(self.analysis.error_cells) > 50 else ""
-            subsections += f"""
-            <div class="subsection">
-                <h3>Error Cells ({len(self.analysis.error_cells)})</h3>
-                <table class="data-table">
-                    <thead><tr><th>Location</th><th>Error</th><th>Formula</th></tr></thead>
-                    <tbody>{error_rows}</tbody>
-                </table>
-                {more}
-            </div>
-            """
-
-        # External references
-        if self.analysis.external_refs:
-            ext_rows = ""
-            for ref in self.analysis.external_refs[:50]:
-                status = '<span class="badge error">Broken</span>' if ref.is_broken else ""
-                source = ref.source_cell.address if ref.source_cell.cell else "-"
-                ext_rows += f"""
-                <tr>
-                    <td>{source}</td>
-                    <td>{self._escape(ref.target_workbook)}</td>
-                    <td>{self._escape(ref.target_sheet or '-')}</td>
-                    <td>{status}</td>
-                </tr>
-                """
-            subsections += f"""
-            <div class="subsection">
-                <h3>External References ({len(self.analysis.external_refs)})</h3>
-                <table class="data-table">
-                    <thead><tr><th>Source</th><th>Workbook</th><th>Sheet</th><th>Status</th></tr></thead>
-                    <tbody>{ext_rows}</tbody>
-                </table>
-            </div>
-            """
-
-        if not subsections:
-            subsections = "<p>No issues detected.</p>"
-
-        return f"""
-        <section id="issues" class="section">
-            <h2>Issues</h2>
-            {subsections}
-        </section>
-        """
-
-    def _generate_charts_section(self) -> str:
-        """Generate the charts section with human-friendly display."""
-        if not self.analysis.charts:
-            return ""
-
-        chart_cards = ""
-        for c in self.analysis.charts:
-            # Build chart card with relevant info
-            title_html = f"<p><strong>Title:</strong> {self._escape(c.title)}</p>" if c.title else ""
-            data_html = f"<p><strong>Data:</strong> <code>{self._escape(c.data_range)}</code></p>" if c.data_range else ""
-            position_html = f"<p><strong>Position:</strong> {self._escape(c.position)}</p>" if c.position else ""
-
-            chart_cards += f"""
-            <div class="chart-card">
-                <div class="chart-header">
-                    <span class="chart-type-badge">{self._escape(c.chart_type)}</span>
-                    <h4>{self._escape(c.name)}</h4>
-                </div>
-                <div class="chart-details">
-                    <p><strong>Sheet:</strong> {self._escape(c.sheet)}</p>
-                    {title_html}
-                    {data_html}
-                    {position_html}
-                </div>
-            </div>
-            """
-
-        return f"""
-        <section id="charts" class="section">
-            <h2>Charts ({len(self.analysis.charts)})</h2>
-            <p class="section-note">Visualizations embedded in the workbook. Chart type, data source, and location are shown for each.</p>
-            <div class="chart-grid">
-                {chart_cards}
-            </div>
-        </section>
-        """
-
-    def _generate_pivot_tables_section(self) -> str:
-        """Generate the pivot tables section."""
-        if not self.analysis.pivot_tables:
-            return ""
-
-        pivot_cards = ""
-        for p in self.analysis.pivot_tables:
-            # Build field lists
-            rows_html = f"<p><strong>Row Fields:</strong> {', '.join(self._escape(f) for f in p.row_fields)}</p>" if p.row_fields else ""
-            cols_html = f"<p><strong>Column Fields:</strong> {', '.join(self._escape(f) for f in p.column_fields)}</p>" if p.column_fields else ""
-            data_html = f"<p><strong>Value Fields:</strong> {', '.join(self._escape(f) for f in p.data_fields)}</p>" if p.data_fields else ""
-            filter_html = f"<p><strong>Filter Fields:</strong> {', '.join(self._escape(f) for f in p.filter_fields)}</p>" if p.filter_fields else ""
-            source_html = f"<p><strong>Source:</strong> <code>{self._escape(p.source_range)}</code></p>" if p.source_range else ""
-
-            pivot_cards += f"""
-            <div class="pivot-card">
-                <div class="pivot-header">
-                    <h4>{self._escape(p.name)}</h4>
-                    <span class="location-badge">{self._escape(p.sheet)} @ {self._escape(p.location)}</span>
-                </div>
-                <div class="pivot-details">
-                    {source_html}
-                    {rows_html}
-                    {cols_html}
-                    {data_html}
-                    {filter_html}
-                </div>
-            </div>
-            """
-
-        return f"""
-        <section id="pivot-tables" class="section">
-            <h2>Pivot Tables ({len(self.analysis.pivot_tables)})</h2>
-            <p class="section-note">Interactive data summaries. Shows source data range and field configuration for each pivot table.</p>
-            <div class="pivot-grid">
-                {pivot_cards}
-            </div>
-        </section>
-        """
-
-    def _generate_tables_section(self) -> str:
-        """Generate the tables (ListObjects) section."""
-        if not self.analysis.tables:
-            return ""
-
-        table_cards = ""
-        for t in self.analysis.tables:
-            # Build column list (show first 8, then count remaining)
-            if len(t.columns) <= 8:
-                cols_display = ", ".join(self._escape(c) for c in t.columns)
-            else:
-                cols_display = ", ".join(self._escape(c) for c in t.columns[:8]) + f" (+{len(t.columns) - 8} more)"
-
-            # Calculate row count if available
-            row_info = ""
-            if t.range:
-                # Extract row count from range like A1:D100
-                try:
-                    parts = t.range.split(":")
-                    if len(parts) == 2:
-                        import re
-                        start_row = int(re.search(r'\d+', parts[0]).group())
-                        end_row = int(re.search(r'\d+', parts[1]).group())
-                        data_rows = end_row - start_row  # Subtract 1 for header
-                        row_info = f"<p><strong>Data Rows:</strong> ~{data_rows}</p>"
-                except Exception:
-                    pass
-
-            table_cards += f"""
-            <div class="table-card">
-                <div class="table-header">
-                    <h4>{self._escape(t.display_name)}</h4>
-                    <span class="location-badge">{self._escape(t.sheet)}</span>
-                </div>
-                <div class="table-details">
-                    <p><strong>Range:</strong> <code>{self._escape(t.range)}</code></p>
-                    {row_info}
-                    <p><strong>Columns ({len(t.columns)}):</strong> {cols_display}</p>
-                </div>
-            </div>
-            """
-
-        return f"""
-        <section id="tables" class="section">
-            <h2>Structured Tables ({len(self.analysis.tables)})</h2>
-            <p class="section-note">Named tables (ListObjects) that support structured references in formulas.</p>
-            <div class="table-grid">
-                {table_cards}
-            </div>
-        </section>
-        """
-
-    def _generate_screenshots_section(self) -> str:
-        """Generate the screenshots section with both zoom levels per sheet."""
-        if not self.analysis.screenshots:
-            return ""
-
-        # Group screenshots by sheet name
-        sheets_screenshots: dict[str, dict[str, str]] = {}
-        for s in self.analysis.screenshots:
-            sheet_name = s.sheet
-            if sheet_name not in sheets_screenshots:
-                sheets_screenshots[sheet_name] = {}
-            # Detect zoom level from filename (e.g., sheet_100.png, sheet_65.png)
-            filename = s.path.name
-            if "_100." in filename:
-                sheets_screenshots[sheet_name]["normal"] = filename
-            elif "_65." in filename:
-                sheets_screenshots[sheet_name]["birdseye"] = filename
-            else:
-                # Fallback for unknown format
-                sheets_screenshots[sheet_name]["normal"] = filename
-
-        gallery = ""
-        for sheet_name, views in sheets_screenshots.items():
-            normal_img = views.get("normal", "")
-            birdseye_img = views.get("birdseye", "")
-
-            gallery += f"""
-            <div class="screenshot-sheet">
-                <h4>{self._escape(sheet_name)}</h4>
-                <div class="screenshot-views">
-            """
-
-            if normal_img:
-                gallery += f"""
-                    <div class="screenshot-view">
-                        <span class="zoom-label">100% (Normal)</span>
-                        <a href="screenshots/{normal_img}" target="_blank">
-                            <img src="screenshots/{normal_img}" alt="{self._escape(sheet_name)} - Normal View" loading="lazy" />
-                        </a>
-                    </div>
-                """
-
-            if birdseye_img:
-                gallery += f"""
-                    <div class="screenshot-view">
-                        <span class="zoom-label">65% (Bird's Eye)</span>
-                        <a href="screenshots/{birdseye_img}" target="_blank">
-                            <img src="screenshots/{birdseye_img}" alt="{self._escape(sheet_name)} - Bird's Eye View" loading="lazy" />
-                        </a>
-                    </div>
-                """
-
-            gallery += """
-                </div>
-            </div>
-            """
-
-        return f"""
-        <section id="screenshots" class="section">
-            <h2>Screenshots</h2>
-            <p class="section-note">Each sheet has two views: 100% (normal reading) and 65% (bird's eye overview). Click to enlarge.</p>
-            <div class="screenshot-gallery">
-                {gallery}
-            </div>
-        </section>
-        """
-
-    def _get_styles(self) -> str:
-        """Get the embedded CSS styles."""
-        return """
-    <style>
-        :root {
-            --bg: #f8f9fa;
-            --card-bg: #ffffff;
-            --text: #212529;
-            --text-muted: #6c757d;
-            --border: #dee2e6;
-            --primary: #0d6efd;
-            --success: #198754;
-            --warning: #ffc107;
-            --error: #dc3545;
-            --sidebar-width: 250px;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            line-height: 1.6;
-        }
-
-        #sidebar {
-            position: fixed;
-            left: 0;
-            top: 0;
-            width: var(--sidebar-width);
-            height: 100vh;
-            background: var(--card-bg);
-            border-right: 1px solid var(--border);
-            padding: 1rem;
-            overflow-y: auto;
-        }
-
-        #sidebar h2 {
-            font-size: 1rem;
-            margin-bottom: 1rem;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        #sidebar ul {
-            list-style: none;
-        }
-
-        #sidebar li {
-            margin-bottom: 0.5rem;
-        }
-
-        #sidebar a {
-            color: var(--text);
-            text-decoration: none;
-            padding: 0.5rem;
-            display: block;
-            border-radius: 4px;
-        }
-
-        #sidebar a:hover {
-            background: var(--bg);
-        }
-
-        #search-container {
-            margin-top: 1rem;
-            padding-top: 1rem;
-            border-top: 1px solid var(--border);
-        }
-
-        #search {
-            width: 100%;
-            padding: 0.5rem;
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            font-size: 0.9rem;
-        }
-
-        main {
-            margin-left: var(--sidebar-width);
-            padding: 2rem;
-            max-width: 1200px;
-        }
-
-        header {
-            margin-bottom: 2rem;
-            padding-bottom: 1rem;
-            border-bottom: 2px solid var(--border);
-        }
-
-        header h1 {
-            font-size: 2rem;
-            margin-bottom: 0.25rem;
-        }
-
-        .subtitle {
-            color: var(--text-muted);
-            font-size: 1.1rem;
-        }
-
-        .generated {
-            color: var(--text-muted);
-            font-size: 0.9rem;
-        }
-
-        .section {
-            background: var(--card-bg);
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-
-        .section h2 {
-            margin-bottom: 1rem;
-            padding-bottom: 0.5rem;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .subsection {
-            margin-top: 1.5rem;
-        }
-
-        .subsection h3 {
-            font-size: 1.1rem;
-            margin-bottom: 0.75rem;
-            color: var(--text-muted);
-        }
-
-        .card-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 1rem;
-        }
-
-        .card {
-            background: var(--bg);
-            border-radius: 6px;
-            padding: 1rem;
-        }
-
-        .card h3 {
-            font-size: 0.9rem;
-            color: var(--text-muted);
-            margin-bottom: 0.5rem;
-        }
-
-        .stat-large {
-            font-size: 2.5rem;
-            font-weight: bold;
-            color: var(--primary);
-        }
-
-        .stat-breakdown {
-            list-style: none;
-            font-size: 0.9rem;
-            color: var(--text-muted);
-        }
-
-        .feature-list {
-            list-style: none;
-        }
-
-        .feature-list li {
-            padding: 0.25rem 0;
-        }
-
-        .feature-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 1rem;
-        }
-
-        .feature-card {
-            background: var(--bg);
-            border-radius: 6px;
-            padding: 1rem;
-        }
-
-        .feature-card h4 {
-            margin-bottom: 0.5rem;
-        }
-
-        .feature-card p {
-            font-size: 0.9rem;
-            margin-bottom: 0.25rem;
-        }
-
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.9rem;
-        }
-
-        .data-table th,
-        .data-table td {
-            padding: 0.75rem;
-            text-align: left;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .data-table th {
-            background: var(--bg);
-            font-weight: 600;
-            position: sticky;
-            top: 0;
-        }
-
-        .data-table tr:hover {
-            background: var(--bg);
-        }
-
-        .info-table {
-            width: 100%;
-        }
-
-        .info-table th {
-            text-align: left;
-            font-weight: normal;
-            color: var(--text-muted);
-            padding: 0.25rem 0;
-        }
-
-        .info-table td {
-            text-align: right;
-            font-weight: 500;
-        }
-
-        .badge {
-            display: inline-block;
-            padding: 0.2rem 0.5rem;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            font-weight: 500;
-            background: var(--bg);
-            color: var(--text-muted);
-        }
-
-        .badge.error {
-            background: #ffeef0;
-            color: var(--error);
-        }
-
-        .visibility {
-            padding: 0.2rem 0.5rem;
-            border-radius: 4px;
-            font-size: 0.8rem;
-        }
-
-        .visibility.visible {
-            background: #d4edda;
-            color: var(--success);
-        }
-
-        .visibility.hidden {
-            background: #fff3cd;
-            color: #856404;
-        }
-
-        .visibility.very-hidden {
-            background: #ffeef0;
-            color: var(--error);
-        }
-
-        .color-dot {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 0.5rem;
-            vertical-align: middle;
-        }
-
-        code, .formula {
-            font-family: "SF Mono", Monaco, Consolas, monospace;
-            font-size: 0.85em;
-            background: var(--bg);
-            padding: 0.1rem 0.3rem;
-            border-radius: 3px;
-        }
-
-        .code-block {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            padding: 1rem;
-            border-radius: 6px;
-            overflow-x: auto;
-            font-size: 0.85rem;
-            line-height: 1.5;
-        }
-
-        .code-block code {
-            background: none;
-            padding: 0;
-        }
-
-        .collapsible .module-header,
-        .collapsible .query-header {
-            cursor: pointer;
-            padding: 1rem;
-            background: var(--bg);
-            border-radius: 6px;
-            margin-bottom: 0.5rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .collapsible .module-header:hover,
-        .collapsible .query-header:hover {
-            background: var(--border);
-        }
-
-        .collapsible .module-content,
-        .collapsible .query-content {
-            padding: 1rem;
-        }
-
-        .collapsed {
-            display: none;
-        }
-
-        .lambda-def {
-            background: var(--bg);
-            padding: 1rem;
-            border-radius: 6px;
-            margin-bottom: 1rem;
-        }
-
-        .lambda-def h4 {
-            margin-bottom: 0.5rem;
-            color: var(--primary);
-        }
-
-        .warnings-block {
-            background: #fff3cd;
-            border: 1px solid #ffc107;
-            border-radius: 6px;
-            padding: 1rem;
-            margin-top: 1rem;
-        }
-
-        .warnings-block h4 {
-            margin-bottom: 0.5rem;
-        }
-
-        .warnings-block ul {
-            list-style: none;
-        }
-
-        .warnings-block li.error {
-            color: var(--error);
-        }
-
-        .warnings-block li.warning {
-            color: #856404;
-        }
-
-        .error-type {
-            color: var(--error);
-            font-weight: 500;
-        }
-
-        .screenshot-gallery {
-            display: flex;
-            flex-direction: column;
-            gap: 2rem;
-        }
-
-        .screenshot-sheet {
-            background: var(--card-bg);
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid var(--border);
-        }
-
-        .screenshot-sheet h4 {
-            padding: 0.75rem 1rem;
-            background: var(--bg);
-            border-bottom: 1px solid var(--border);
-            margin: 0;
-            font-size: 1.1rem;
-        }
-
-        .screenshot-views {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 1rem;
-            padding: 1rem;
-        }
-
-        .screenshot-view {
-            background: var(--bg);
-            border-radius: 6px;
-            overflow: hidden;
-        }
-
-        .zoom-label {
-            display: block;
-            padding: 0.5rem;
-            font-size: 0.85rem;
-            color: var(--text-muted);
-            text-align: center;
-            background: var(--card-bg);
-            border-bottom: 1px solid var(--border);
-        }
-
-        .screenshot-view img {
-            width: 100%;
-            height: auto;
-            display: block;
-        }
-
-        .section-note {
-            color: var(--text-muted);
-            font-size: 0.9rem;
-            margin-bottom: 1rem;
-        }
-
-        /* Charts section */
-        .chart-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-            gap: 1rem;
-        }
-
-        .chart-card {
-            background: var(--bg);
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid var(--border);
-        }
-
-        .chart-header {
-            padding: 0.75rem 1rem;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .chart-header h4 {
-            margin: 0;
-            font-size: 1rem;
-        }
-
-        .chart-type-badge {
-            background: rgba(255,255,255,0.2);
-            padding: 0.25rem 0.5rem;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            white-space: nowrap;
-        }
-
-        .chart-details {
-            padding: 1rem;
-        }
-
-        .chart-details p {
-            margin: 0.25rem 0;
-            font-size: 0.9rem;
-        }
-
-        /* Pivot Tables section */
-        .pivot-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 1rem;
-        }
-
-        .pivot-card {
-            background: var(--bg);
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid var(--border);
-        }
-
-        .pivot-header {
-            padding: 0.75rem 1rem;
-            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-            color: white;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-        }
-
-        .pivot-header h4 {
-            margin: 0;
-            font-size: 1rem;
-        }
-
-        .location-badge {
-            background: rgba(255,255,255,0.2);
-            padding: 0.25rem 0.5rem;
-            border-radius: 4px;
-            font-size: 0.75rem;
-        }
-
-        .pivot-details {
-            padding: 1rem;
-        }
-
-        .pivot-details p {
-            margin: 0.25rem 0;
-            font-size: 0.9rem;
-        }
-
-        /* Structured Tables section */
-        .table-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 1rem;
-        }
-
-        .table-card {
-            background: var(--bg);
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid var(--border);
-        }
-
-        .table-header {
-            padding: 0.75rem 1rem;
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            color: white;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-        }
-
-        .table-header h4 {
-            margin: 0;
-            font-size: 1rem;
-        }
-
-        .table-details {
-            padding: 1rem;
-        }
-
-        .table-details p {
-            margin: 0.25rem 0;
-            font-size: 0.9rem;
-        }
-
-        @media (max-width: 1200px) {
-            .screenshot-views {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        footer {
-            margin-top: 2rem;
-            padding-top: 1rem;
-            border-top: 1px solid var(--border);
-            text-align: center;
-            color: var(--text-muted);
-            font-size: 0.9rem;
-        }
-
-        @media (max-width: 768px) {
-            #sidebar {
-                position: static;
-                width: 100%;
-                height: auto;
-                border-right: none;
-                border-bottom: 1px solid var(--border);
-            }
-
-            main {
-                margin-left: 0;
-            }
-        }
-    </style>
-        """
-
-    def _get_scripts(self) -> str:
-        """Get the embedded JavaScript."""
-        return """
-    <script>
-        // Collapsible sections
-        function toggleCollapse(header) {
-            const content = header.nextElementSibling;
-            content.classList.toggle('collapsed');
-        }
-
-        // Search functionality
-        document.getElementById('search').addEventListener('input', function(e) {
-            const query = e.target.value.toLowerCase();
-            const rows = document.querySelectorAll('tbody tr');
-
-            rows.forEach(row => {
-                const text = row.textContent.toLowerCase();
-                row.style.display = text.includes(query) ? '' : 'none';
-            });
-        });
-
-        // Smooth scroll
-        document.querySelectorAll('#sidebar a').forEach(link => {
-            link.addEventListener('click', function(e) {
-                e.preventDefault();
-                const target = document.querySelector(this.getAttribute('href'));
-                if (target) {
-                    target.scrollIntoView({ behavior: 'smooth' });
-                }
-            });
-        });
-
-        // Expand all code blocks on page load for visibility
-        // Comment this out if you want them collapsed by default
-        // document.querySelectorAll('.collapsed').forEach(el => el.classList.remove('collapsed'));
-    </script>
-        """
+        </div>'''
+
+    def _get_sheet_feature_badges(self, sheet: SheetInfo) -> str:
+        """Get HTML badges for sheet features."""
+        badges = []
+        if sheet.has_formulas:
+            badges.append('<span class="badge">Formulas</span>')
+        if sheet.has_charts:
+            badges.append('<span class="badge">Charts</span>')
+        if sheet.has_pivots:
+            badges.append('<span class="badge">Pivots</span>')
+        if sheet.has_tables:
+            badges.append('<span class="badge">Tables</span>')
+        if sheet.has_conditional_formatting:
+            badges.append('<span class="badge">CF</span>')
+        if sheet.has_data_validation:
+            badges.append('<span class="badge">DV</span>')
+        return " ".join(badges) if badges else ""
+
+    def _sheet_filename(self, name: str) -> str:
+        """Convert sheet name to safe filename."""
+        # Replace problematic characters
+        safe = re.sub(r'[<>:"/\\|?*]', '_', name)
+        safe = re.sub(r'\s+', '-', safe)
+        return f"{safe}.html"
+
+    def _slug(self, text: str) -> str:
+        """Convert text to URL-safe slug."""
+        slug = re.sub(r'[^a-zA-Z0-9]+', '-', text.lower())
+        return slug.strip('-')
 
     def _escape(self, text: str) -> str:
         """Escape HTML special characters."""
@@ -1511,3 +1086,579 @@ class HTMLReportBuilder:
                 return f"{size_bytes:.1f} {unit}"
             size_bytes /= 1024
         return f"{size_bytes:.1f} TB"
+
+    def _get_styles(self) -> str:
+        """Get the shared CSS styles."""
+        return """
+:root {
+    --bg: #f8f9fa;
+    --card-bg: #ffffff;
+    --text: #212529;
+    --text-muted: #6c757d;
+    --border: #dee2e6;
+    --primary: #0d6efd;
+    --success: #198754;
+    --warning: #ffc107;
+    --error: #dc3545;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+.breadcrumb {
+    margin-bottom: 1rem;
+}
+
+.breadcrumb a {
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.breadcrumb a:hover {
+    text-decoration: underline;
+}
+
+.page-header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 2px solid var(--border);
+}
+
+.page-header h1 {
+    font-size: 2rem;
+    margin-bottom: 0.25rem;
+}
+
+.subtitle {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+/* Sheet header */
+.sheet-header .sheet-title {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.sheet-meta {
+    color: var(--text-muted);
+    margin-top: 0.5rem;
+}
+
+.sheet-nav {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
+
+.sheet-nav a {
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.sheet-nav a:hover {
+    text-decoration: underline;
+}
+
+/* Stats grid */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.stat-card {
+    background: var(--card-bg);
+    border-radius: 8px;
+    padding: 1rem;
+    text-align: center;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.stat-value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: var(--primary);
+}
+
+.stat-label {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+/* Sheet groups */
+.sheet-group {
+    margin-bottom: 2rem;
+}
+
+.sheet-group h3 {
+    margin-bottom: 1rem;
+    color: var(--text-muted);
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.sheet-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1rem;
+}
+
+.sheet-card {
+    display: block;
+    background: var(--card-bg);
+    border-radius: 8px;
+    padding: 1rem;
+    text-decoration: none;
+    color: var(--text);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.sheet-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.sheet-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.sheet-name {
+    font-weight: 600;
+    font-size: 1.1rem;
+}
+
+.sheet-card-meta {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+}
+
+.sheet-card-features {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+}
+
+/* Workbook links */
+.workbook-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.workbook-link {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--card-bg);
+    border-radius: 8px;
+    padding: 1rem 1.5rem;
+    text-decoration: none;
+    color: var(--text);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    transition: transform 0.2s;
+}
+
+.workbook-link:hover {
+    transform: translateY(-2px);
+}
+
+.workbook-link .icon {
+    font-size: 1.5rem;
+}
+
+/* Badges */
+.badge {
+    display: inline-block;
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 500;
+    background: var(--bg);
+    color: var(--text-muted);
+}
+
+.badge.error {
+    background: #ffeef0;
+    color: var(--error);
+}
+
+.visibility-badge {
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.visibility-badge.hidden {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.visibility-badge.very-hidden {
+    background: #ffeef0;
+    color: var(--error);
+}
+
+/* Color dot */
+.color-dot {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+}
+
+.color-dot.large {
+    width: 16px;
+    height: 16px;
+}
+
+/* Content sections */
+.content-section {
+    background: var(--card-bg);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.content-section h2 {
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+/* Item cards (charts, pivots, tables) */
+.item-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1rem;
+}
+
+.item-card {
+    background: var(--bg);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.item-header {
+    padding: 0.75rem 1rem;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.pivot-card .item-header {
+    background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+}
+
+.table-card .item-header {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+}
+
+.item-type {
+    background: rgba(255,255,255,0.2);
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+}
+
+.item-name {
+    font-weight: 600;
+}
+
+.item-location {
+    font-size: 0.8rem;
+    opacity: 0.9;
+}
+
+.item-details {
+    padding: 1rem;
+}
+
+.item-details p {
+    margin: 0.25rem 0;
+    font-size: 0.9rem;
+}
+
+/* Data tables */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.data-table th,
+.data-table td {
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+
+.data-table th {
+    background: var(--bg);
+    font-weight: 600;
+}
+
+.data-table tr:hover {
+    background: var(--bg);
+}
+
+/* Formula categories */
+.formula-category {
+    margin-bottom: 1.5rem;
+}
+
+.formula-category h4 {
+    margin-bottom: 0.5rem;
+    color: var(--text-muted);
+}
+
+/* Screenshots */
+.screenshot-views {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 1rem;
+}
+
+.screenshot-view {
+    background: var(--bg);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.zoom-label {
+    display: block;
+    padding: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    text-align: center;
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border);
+}
+
+.screenshot-view img {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+
+/* Comments */
+.comments-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.comment-item {
+    background: var(--bg);
+    padding: 0.75rem;
+    border-radius: 6px;
+}
+
+.comment-cell {
+    font-weight: 600;
+    margin-right: 0.5rem;
+}
+
+.comment-author {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.comment-text {
+    margin-top: 0.25rem;
+    font-size: 0.9rem;
+}
+
+/* VBA/PQ modules */
+.vba-module, .pq-query {
+    margin-bottom: 1rem;
+}
+
+.module-header, .query-header {
+    cursor: pointer;
+    padding: 1rem;
+    background: var(--bg);
+    border-radius: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.module-header:hover, .query-header:hover {
+    background: var(--border);
+}
+
+.module-header h3, .query-header h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.module-info {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.module-content, .query-content {
+    padding: 1rem;
+}
+
+.collapsed {
+    display: none;
+}
+
+/* Code blocks */
+code {
+    font-family: "SF Mono", Monaco, Consolas, monospace;
+    font-size: 0.85em;
+    background: var(--bg);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+}
+
+.code-block {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+
+.code-block code {
+    background: none;
+    padding: 0;
+}
+
+/* Lambda definitions */
+.lambda-def {
+    background: var(--bg);
+    padding: 1rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+}
+
+.lambda-def h4 {
+    margin-bottom: 0.5rem;
+    color: var(--primary);
+}
+
+/* VBA links */
+.vba-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.vba-link {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    background: var(--bg);
+    border-radius: 6px;
+    text-decoration: none;
+    color: var(--primary);
+}
+
+.vba-link:hover {
+    background: var(--border);
+}
+
+/* Warnings */
+.warnings-block {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 6px;
+    padding: 1rem;
+    margin-top: 1rem;
+}
+
+.warnings-block h4 {
+    margin-bottom: 0.5rem;
+}
+
+.warnings-block ul {
+    list-style: none;
+}
+
+.warnings-block li.error {
+    color: var(--error);
+}
+
+.warnings-block li.warning {
+    color: #856404;
+}
+
+/* Misc */
+.error-type {
+    color: var(--error);
+    font-weight: 500;
+}
+
+.more-note {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+}
+
+.empty-state {
+    color: var(--text-muted);
+    text-align: center;
+    padding: 2rem;
+}
+
+footer {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+/* Summary/sheets/workbook sections on index */
+.summary-section, .sheets-section, .workbook-section {
+    background: var(--card-bg);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.summary-section h2, .sheets-section h2, .workbook-section h2 {
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+"""
