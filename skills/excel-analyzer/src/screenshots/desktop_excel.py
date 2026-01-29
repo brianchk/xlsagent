@@ -199,12 +199,20 @@ class DesktopExcelScreenshotter:
             state['formula_bar'] = api.DisplayFormulaBar
             state['status_bar'] = api.DisplayStatusBar
 
-            # Hide formula bar and status bar (these don't steal focus)
+            # Hide formula bar and status bar
             api.DisplayFormulaBar = False
             api.DisplayStatusBar = False
 
-            # Skip ribbon manipulation - it causes focus stealing
-            # Users can manually minimize ribbon if they want more space
+            # Minimize ribbon (may cause brief focus steal but maximizes sheet area)
+            try:
+                api.ExecuteExcel4Macro('SHOW.TOOLBAR("Ribbon",False)')
+            except Exception:
+                try:
+                    api.CommandBars.ExecuteMso("MinimizeRibbon")
+                except Exception:
+                    pass
+
+            time.sleep(0.2)  # Let UI update
 
         except Exception as e:
             print(f"    Warning: Could not hide UI elements: {e}", flush=True)
@@ -221,6 +229,15 @@ class DesktopExcelScreenshotter:
                 api.DisplayFormulaBar = state['formula_bar']
             if 'status_bar' in state:
                 api.DisplayStatusBar = state['status_bar']
+
+            # Restore ribbon
+            try:
+                api.ExecuteExcel4Macro('SHOW.TOOLBAR("Ribbon",True)')
+            except Exception:
+                try:
+                    api.CommandBars.ExecuteMso("MinimizeRibbon")  # Toggle back
+                except Exception:
+                    pass
 
         except Exception as e:
             print(f"    Warning: Could not restore UI elements: {e}", flush=True)
