@@ -43,11 +43,14 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Project specific
-*.xlsx
-*.xlsm
-*.xlsb
+# Project specific - analysis output
 *_analysis/
+files/*/analysis/
+
+# Excel files in root (but allow files/ directory samples)
+/*.xlsx
+/*.xlsm
+/*.xlsb
 
 # Claude
 .claude/
