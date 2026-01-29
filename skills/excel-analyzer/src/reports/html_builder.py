@@ -663,24 +663,66 @@ class HTMLReportBuilder:
         """
 
     def _generate_screenshots_section(self) -> str:
-        """Generate the screenshots section."""
+        """Generate the screenshots section with both zoom levels per sheet."""
         if not self.analysis.screenshots:
             return ""
 
-        gallery = ""
+        # Group screenshots by sheet name
+        sheets_screenshots: dict[str, dict[str, str]] = {}
         for s in self.analysis.screenshots:
+            sheet_name = s.sheet
+            if sheet_name not in sheets_screenshots:
+                sheets_screenshots[sheet_name] = {}
+            # Detect zoom level from filename (e.g., sheet_100.png, sheet_65.png)
+            filename = s.path.name
+            if "_100." in filename:
+                sheets_screenshots[sheet_name]["normal"] = filename
+            elif "_65." in filename:
+                sheets_screenshots[sheet_name]["birdseye"] = filename
+            else:
+                # Fallback for unknown format
+                sheets_screenshots[sheet_name]["normal"] = filename
+
+        gallery = ""
+        for sheet_name, views in sheets_screenshots.items():
+            normal_img = views.get("normal", "")
+            birdseye_img = views.get("birdseye", "")
+
             gallery += f"""
-            <div class="screenshot-card">
-                <h4>{self._escape(s.sheet)}</h4>
-                <a href="screenshots/{s.path.name}" target="_blank">
-                    <img src="screenshots/{s.path.name}" alt="{self._escape(s.sheet)}" loading="lazy" />
-                </a>
+            <div class="screenshot-sheet">
+                <h4>{self._escape(sheet_name)}</h4>
+                <div class="screenshot-views">
+            """
+
+            if normal_img:
+                gallery += f"""
+                    <div class="screenshot-view">
+                        <span class="zoom-label">100% (Normal)</span>
+                        <a href="screenshots/{normal_img}" target="_blank">
+                            <img src="screenshots/{normal_img}" alt="{self._escape(sheet_name)} - Normal View" loading="lazy" />
+                        </a>
+                    </div>
+                """
+
+            if birdseye_img:
+                gallery += f"""
+                    <div class="screenshot-view">
+                        <span class="zoom-label">65% (Bird's Eye)</span>
+                        <a href="screenshots/{birdseye_img}" target="_blank">
+                            <img src="screenshots/{birdseye_img}" alt="{self._escape(sheet_name)} - Bird's Eye View" loading="lazy" />
+                        </a>
+                    </div>
+                """
+
+            gallery += """
+                </div>
             </div>
             """
 
         return f"""
         <section id="screenshots" class="section">
             <h2>Screenshots</h2>
+            <p class="section-note">Each sheet has two views: 100% (normal reading) and 65% (bird's eye overview). Click to enlarge.</p>
             <div class="screenshot-gallery">
                 {gallery}
             </div>
@@ -1057,27 +1099,65 @@ class HTMLReportBuilder:
         }
 
         .screenshot-gallery {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
         }
 
-        .screenshot-card {
+        .screenshot-sheet {
+            background: var(--card-bg);
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+
+        .screenshot-sheet h4 {
+            padding: 0.75rem 1rem;
+            background: var(--bg);
+            border-bottom: 1px solid var(--border);
+            margin: 0;
+            font-size: 1.1rem;
+        }
+
+        .screenshot-views {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+            padding: 1rem;
+        }
+
+        .screenshot-view {
             background: var(--bg);
             border-radius: 6px;
             overflow: hidden;
         }
 
-        .screenshot-card h4 {
-            padding: 0.75rem;
+        .zoom-label {
+            display: block;
+            padding: 0.5rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            text-align: center;
             background: var(--card-bg);
             border-bottom: 1px solid var(--border);
         }
 
-        .screenshot-card img {
+        .screenshot-view img {
             width: 100%;
             height: auto;
             display: block;
+        }
+
+        .section-note {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+        }
+
+        @media (max-width: 1200px) {
+            .screenshot-views {
+                grid-template-columns: 1fr;
+            }
         }
 
         footer {

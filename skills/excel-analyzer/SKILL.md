@@ -48,10 +48,14 @@ Based on the technical extracts, provide:
 - What decisions does it support?
 
 #### 2. Sheet-by-Sheet Analysis
-For each sheet, explain:
-- Its purpose and role in the workbook
-- What data it contains or calculates
-- How it relates to other sheets
+Focus on **main analytical sheets** (skip supporting data sheets like `pbi-*`, `ref-*`, `config-*` unless relevant).
+
+For each main sheet, analyze:
+- **Purpose**: What business question does this sheet answer?
+- **Key Inputs/Filters**: What can users configure? (dropdowns, date ranges, parameters)
+- **Data Dimensions**: How is data organized? (rows = products, columns = months, etc.)
+- **Output Sections**: What are the key output areas and their purposes?
+- **Visualizations**: What charts/graphs are present and what do they show?
 
 #### 3. Architecture & Data Flow
 - How do sheets connect to each other?
