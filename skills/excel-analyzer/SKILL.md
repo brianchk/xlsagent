@@ -18,6 +18,20 @@ Skip screenshots (required on macOS):
 /analyze-excel /path/to/workbook.xlsx --no-screenshots
 ```
 
+### Using Pre-Existing Extraction Output
+
+If you already have extraction output (e.g., generated on Windows with screenshots), you can skip
+the extraction phase and go straight to AI analysis:
+
+```
+/analyze-excel --existing /path/to/existing_analysis
+```
+
+This is useful for:
+- Running extraction on Windows (with screenshots), then analyzing on Mac
+- Re-analyzing the same workbook without re-extracting
+- Sharing extraction output with others for AI analysis
+
 ## How This Skill Works
 
 This skill has two distinct phases:
