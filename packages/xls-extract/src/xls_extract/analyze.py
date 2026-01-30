@@ -182,11 +182,16 @@ def _run_extractors(
     warnings: list[ExtractionWarning],
 ) -> None:
     """Run all configured extractors."""
+    print("Extracting data...", flush=True)
+
+    def log(msg: str) -> None:
+        print(f"  {msg}", flush=True)
 
     # Always extract sheets first (needed by other extractors)
     try:
         extractor = SheetExtractor(workbook, file_path)
         result.sheets = extractor.extract()
+        log(f"Sheets: {len(result.sheets)}")
     except Exception as e:
         errors.append(ExtractionError("sheets", str(e)))
 
@@ -194,6 +199,7 @@ def _run_extractors(
     try:
         extractor = NamedRangeExtractor(workbook, file_path)
         result.named_ranges = extractor.extract()
+        log(f"Named ranges: {len(result.named_ranges)}")
     except Exception as e:
         errors.append(ExtractionError("named_ranges", str(e)))
 
@@ -208,6 +214,7 @@ def _run_extractors(
                     "formulas",
                     f"Limited to {options.max_formulas} formulas",
                 ))
+            log(f"Formulas: {len(result.formulas)}")
         except Exception as e:
             errors.append(ExtractionError("formulas", str(e)))
 
@@ -216,6 +223,7 @@ def _run_extractors(
         try:
             extractor = ConditionalFormatExtractor(workbook, file_path)
             result.conditional_formats = extractor.extract()
+            log(f"Conditional formats: {len(result.conditional_formats)}")
         except Exception as e:
             errors.append(ExtractionError("conditional_formats", str(e)))
 
@@ -224,6 +232,7 @@ def _run_extractors(
         try:
             extractor = DataValidationExtractor(workbook, file_path)
             result.data_validations = extractor.extract()
+            log(f"Data validations: {len(result.data_validations)}")
         except Exception as e:
             errors.append(ExtractionError("data_validations", str(e)))
 
@@ -232,6 +241,7 @@ def _run_extractors(
         try:
             extractor = PivotTableExtractor(workbook, file_path)
             result.pivot_tables = extractor.extract()
+            log(f"Pivot tables: {len(result.pivot_tables)}")
         except Exception as e:
             errors.append(ExtractionError("pivot_tables", str(e)))
 
@@ -240,6 +250,7 @@ def _run_extractors(
         try:
             extractor = ChartExtractor(workbook, file_path)
             result.charts = extractor.extract()
+            log(f"Charts: {len(result.charts)}")
         except Exception as e:
             errors.append(ExtractionError("charts", str(e)))
 
@@ -247,6 +258,7 @@ def _run_extractors(
     try:
         extractor = TableExtractor(workbook, file_path)
         result.tables = extractor.extract()
+        log(f"Tables: {len(result.tables)}")
     except Exception as e:
         errors.append(ExtractionError("tables", str(e)))
 
@@ -254,6 +266,7 @@ def _run_extractors(
     try:
         extractor = FilterExtractor(workbook, file_path)
         result.auto_filters = extractor.extract()
+        log(f"Auto filters: {len(result.auto_filters)}")
     except Exception as e:
         errors.append(ExtractionError("filters", str(e)))
 
@@ -264,6 +277,7 @@ def _run_extractors(
             vba_result = extractor.extract()
             result.vba_modules = vba_result.get("modules", [])
             result.vba_project_name = vba_result.get("project_name")
+            log(f"VBA modules: {len(result.vba_modules)}")
         except Exception as e:
             errors.append(ExtractionError("vba", str(e)))
 
@@ -272,6 +286,7 @@ def _run_extractors(
         try:
             extractor = PowerQueryExtractor(workbook, file_path)
             result.power_queries = extractor.extract()
+            log(f"Power queries: {len(result.power_queries)}")
         except Exception as e:
             errors.append(ExtractionError("power_query", str(e)))
 
@@ -280,6 +295,7 @@ def _run_extractors(
         try:
             extractor = ControlExtractor(workbook, file_path)
             result.controls = extractor.extract()
+            log(f"Controls: {len(result.controls)}")
         except Exception as e:
             errors.append(ExtractionError("controls", str(e)))
 
@@ -287,7 +303,11 @@ def _run_extractors(
     if options.extract_connections:
         try:
             extractor = ConnectionExtractor(workbook, file_path)
-            result.connections = extractor.extract()
+            connections, conn_external_refs = extractor.extract()
+            result.connections = connections
+            # Merge external refs (ErrorExtractor also finds some)
+            result.external_refs.extend(conn_external_refs)
+            log(f"Connections: {len(result.connections)}")
         except Exception as e:
             errors.append(ExtractionError("connections", str(e)))
 
@@ -296,6 +316,7 @@ def _run_extractors(
         try:
             extractor = CommentExtractor(workbook, file_path)
             result.comments = extractor.extract()
+            log(f"Comments: {len(result.comments)}")
         except Exception as e:
             errors.append(ExtractionError("comments", str(e)))
 
@@ -304,6 +325,7 @@ def _run_extractors(
         try:
             extractor = HyperlinkExtractor(workbook, file_path)
             result.hyperlinks = extractor.extract()
+            log(f"Hyperlinks: {len(result.hyperlinks)}")
         except Exception as e:
             errors.append(ExtractionError("hyperlinks", str(e)))
 
@@ -314,6 +336,7 @@ def _run_extractors(
             protection_result = extractor.extract()
             result.workbook_protection = protection_result.get("workbook")
             result.sheet_protections = protection_result.get("sheets", [])
+            log(f"Protected sheets: {len(result.sheet_protections)}")
         except Exception as e:
             errors.append(ExtractionError("protection", str(e)))
 
@@ -322,6 +345,7 @@ def _run_extractors(
         try:
             extractor = PrintSettingsExtractor(workbook, file_path)
             result.print_settings = extractor.extract()
+            log(f"Print settings: {len(result.print_settings)}")
         except Exception as e:
             errors.append(ExtractionError("print_settings", str(e)))
 
@@ -331,7 +355,10 @@ def _run_extractors(
             extractor = ErrorExtractor(workbook, file_path)
             error_result = extractor.extract()
             result.error_cells = error_result.get("errors", [])
-            result.external_refs = error_result.get("external_refs", [])
+            # Extend, don't overwrite (ConnectionExtractor may have added some)
+            result.external_refs.extend(error_result.get("external_refs", []))
+            log(f"Error cells: {len(result.error_cells)}")
+            log(f"External refs: {len(result.external_refs)}")
         except Exception as e:
             errors.append(ExtractionError("errors", str(e)))
 
@@ -341,6 +368,8 @@ def _run_extractors(
         dax_result = detector.extract()
         result.has_dax = dax_result.get("has_dax", False)
         result.dax_detection_note = dax_result.get("note")
+        if result.has_dax:
+            log("DAX/Power Pivot: Detected")
     except Exception as e:
         errors.append(ExtractionError("dax_detection", str(e)))
 

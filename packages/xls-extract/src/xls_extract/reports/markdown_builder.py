@@ -482,24 +482,29 @@ This directory contains a comprehensive analysis of the Excel workbook.
             self._write_file("features/connections.md", content)
 
         # Protection
-        if self.analysis.protection:
-            p = self.analysis.protection
+        if self.analysis.workbook_protection or self.analysis.sheet_protections:
             content = "# Protection Settings\n\n"
 
             content += "## Workbook Level\n\n"
-            content += f"- Protected: {'Yes' if p.workbook_protected else 'No'}\n"
-            if p.workbook_protected:
-                content += f"- Structure: {'Protected' if p.workbook_structure else 'Not protected'}\n"
-                content += f"- Windows: {'Protected' if p.workbook_windows else 'Not protected'}\n"
+            wp = self.analysis.workbook_protection
+            if wp:
+                content += f"- Protected: {'Yes' if wp.is_protected else 'No'}\n"
+                if wp.is_protected:
+                    content += f"- Structure: {'Protected' if wp.protect_structure else 'Not protected'}\n"
+                    content += f"- Windows: {'Protected' if wp.protect_windows else 'Not protected'}\n"
+            else:
+                content += "- Protected: No\n"
 
-            content += "\n## Sheet Level\n\n"
-            for sheet_name, details in p.sheets.items():
-                protected = details.get("protected", False)
-                content += f"### {sheet_name}\n\n"
-                content += f"- Protected: {'Yes' if protected else 'No'}\n"
-                if protected:
-                    content += f"- Password Protected: {'Yes' if details.get('password_protected') else 'No'}\n"
-                content += "\n"
+            if self.analysis.sheet_protections:
+                content += "\n## Sheet Level\n\n"
+                for sp in self.analysis.sheet_protections:
+                    content += f"### {sp.sheet}\n\n"
+                    content += f"- Protected: {'Yes' if sp.is_protected else 'No'}\n"
+                    if sp.is_protected:
+                        content += f"- Select Locked Cells: {'Allowed' if sp.allow_select_locked else 'Blocked'}\n"
+                        content += f"- Select Unlocked Cells: {'Allowed' if sp.allow_select_unlocked else 'Blocked'}\n"
+                        content += f"- Format Cells: {'Allowed' if sp.allow_format_cells else 'Blocked'}\n"
+                    content += "\n"
 
             self._write_file("features/protection.md", content)
 

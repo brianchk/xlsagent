@@ -63,6 +63,9 @@ all = [
     "xls-extract[screenshots]",
 ]
 
+[project.scripts]
+xls-extract = "xls_extract.__main__:main"
+
 [project.urls]
 Homepage = "https://github.com/brianchk/xls-extract"
 Documentation = "https://github.com/brianchk/xls-extract#readme"
